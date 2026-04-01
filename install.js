@@ -24,6 +24,7 @@ const MANIFEST_PATH = path.join(MANIFEST_DIR, ".manifest.json");
 const REPO_ROOT = fs.realpathSync(__dirname);
 
 const OLD_HOOKS_PATH = path.join(os.homedir(), ".claude", "hooks", "ghostty");
+const OLD_HOOKS_TILDE = "~/.claude/hooks/ghostty";
 
 const HOOKS = [
   {
@@ -94,7 +95,9 @@ function isOurHook(entry) {
 
 /** Check if a hook entry references the old ~/.claude/hooks/ghostty/ path. */
 function isOldGhosttyHook(entry) {
-  return entry.hooks?.some((h) => h.command?.includes(OLD_HOOKS_PATH));
+  return entry.hooks?.some(
+    (h) => h.command?.includes(OLD_HOOKS_PATH) || h.command?.includes(OLD_HOOKS_TILDE)
+  );
 }
 
 // ── Install ─────────────────────────────────────────────────────────────────
@@ -160,20 +163,30 @@ function install() {
   console.log(`\n  Manifest written to ${MANIFEST_PATH}`);
 
   // 4. Check Ollama reachability
+  let ollamaDone = false;
   try {
     const http = require("http");
     const req = http.get("http://localhost:11434/", { timeout: 3000 }, (res) => {
-      console.log(`  Ollama: reachable (status ${res.statusCode})`);
-      printDone();
+      if (!ollamaDone) {
+        ollamaDone = true;
+        console.log(`  Ollama: reachable (status ${res.statusCode})`);
+        printDone();
+      }
     });
     req.on("error", () => {
-      console.log(`  Ollama: NOT reachable — make sure Ollama is running`);
-      printDone();
+      if (!ollamaDone) {
+        ollamaDone = true;
+        console.log(`  Ollama: NOT reachable — make sure Ollama is running`);
+        printDone();
+      }
     });
     req.on("timeout", () => {
       req.destroy();
-      console.log(`  Ollama: NOT reachable — make sure Ollama is running`);
-      printDone();
+      if (!ollamaDone) {
+        ollamaDone = true;
+        console.log(`  Ollama: NOT reachable — make sure Ollama is running`);
+        printDone();
+      }
     });
   } catch {
     printDone();
