@@ -151,7 +151,7 @@ def _get_pool_key(sound_class: str, mode: str) -> str:
 def _ensure_unit_pool(state: dict, pool_key: str, sound_class: str) -> dict:
     pools = state.setdefault("unit_pools", {})
     pool = pools.setdefault(pool_key, {"counts": {}, "last_unit": ""})
-    counts = pool["counts"]
+    counts = pool.setdefault("counts", {})
     for unit in UNITS.get(sound_class, []):
         if unit not in counts:
             counts[unit] = 0
@@ -160,7 +160,7 @@ def _ensure_unit_pool(state: dict, pool_key: str, sound_class: str) -> dict:
 
 def _ensure_class_pool(state: dict) -> dict:
     pool = state.setdefault("class_pool", {"counts": {}, "last_class": ""})
-    counts = pool["counts"]
+    counts = pool.setdefault("counts", {})
     for cls in VALID_CLASSES:
         if cls not in counts:
             counts[cls] = 0
