@@ -140,7 +140,7 @@ Multiple sessions interleave in the log but are fully separable by `[sid]`. Date
 **Tab title not renaming:**
 Look for `tabtitle` lines. The log will show exactly why:
 - `skip: prompt too short (N < 40 chars)` — message was too short
-- `skip: cooldown (Xs elapsed, 90s required)` — still within the cooldown window
+- `skip: cooldown (Xs elapsed, 90s required)` — still within the cooldown window (cooldown only resets on actual renames, not on same-slug or KEEP results)
 - `llm returned None` — Ollama timed out (10s timeout) or returned an invalid slug
 - `llm error: ...` — Ollama not running or model not available
 - `set_tab_title failed` — Ghostty AppleScript failed (window not focused, Ghostty not running)
@@ -191,7 +191,7 @@ The debounce file is the shared state between all hooks for a given session:
 
 ```sh
 cat /tmp/claude-tabtitle/<session_id>
-# line 1: unix timestamp of last rename
+# line 1: unix timestamp of last actual rename (cooldown reference)
 # line 2: current title (may include emoji prefix)
 # line 3: (optional) plan state flag
 ```
@@ -221,7 +221,7 @@ The most complex hook. Flow:
 3. **Set working emoji**: Replace any attention emoji with 🌀
 4. **Debounce check**: Skip if within 90s cooldown or message is short (<40 chars). First message always triggers.
 5. **Generate slug**: Call local Ollama model via `client.py` (10s timeout)
-6. **Set title + sound**: If new slug generated, set title with 🌀 and play `task.acknowledge`. Write debounce file.
+6. **Set title + sound**: If new slug generated, set title with 🌀, play `task.acknowledge`, and reset cooldown timestamp. If slug matches current title or LLM returns KEEP, the cooldown timestamp is preserved — so subsequent messages can be evaluated sooner.
 
 The slug prompt asks the model to output a 2-5 word hyphenated slug or `KEEP` if the current title still fits. Validation rejects anything with spaces, special characters, error markers, or over 40 chars.
 

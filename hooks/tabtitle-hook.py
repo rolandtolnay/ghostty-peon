@@ -324,11 +324,11 @@ def main():
     now = str(time.time())
     if slug:
         if slug == current_title:
-            # Same title — keep working emoji, update timestamp
-            set_status_emoji(session_id, EMOJI_WORKING, current_title, now, "tabtitle")
-            log(session_id, "tabtitle", "slug == current title, timestamp updated")
+            # Same title — keep working emoji, preserve original timestamp (no cooldown reset)
+            set_status_emoji(session_id, EMOJI_WORKING, current_title, current_timestamp, "tabtitle")
+            log(session_id, "tabtitle", "slug == current title, cooldown not reset")
             sys.exit(0)
-        # New slug — set with working emoji
+        # New slug — set with working emoji and reset cooldown
         log(session_id, "tabtitle", f"-> {EMOJI_WORKING} renamed ({slug!r})")
         if not set_status_emoji(session_id, EMOJI_WORKING, slug, now, "tabtitle"):
             log(session_id, "tabtitle", f"set_status_emoji failed for {slug!r}")
@@ -337,14 +337,14 @@ def main():
         write_origin_message(session_id, prompt)
     else:
         if current_title:
-            # No rename — keep working emoji on existing title, update timestamp
-            set_status_emoji(session_id, EMOJI_WORKING, current_title, now, "tabtitle")
+            # No rename — keep working emoji, preserve original timestamp (no cooldown reset)
+            set_status_emoji(session_id, EMOJI_WORKING, current_title, current_timestamp, "tabtitle")
         else:
             # First message, no title yet — just write timestamp
             write_debounce(debounce_path, now, "", session_id)
         if is_first_message:
             write_origin_message(session_id, prompt)
-        log(session_id, "tabtitle", "no slug, timestamp updated")
+        log(session_id, "tabtitle", "no rename, cooldown not reset")
 
     sys.exit(0)
 
