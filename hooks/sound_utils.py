@@ -364,6 +364,30 @@ def capture_terminal_id(session_id: str) -> str | None:
         return None
 
 
+def is_terminal_owned(term_id: str, exclude_session: str) -> str | None:
+    """Check if another active session already owns this terminal.
+
+    Used to detect subagent sessions: if the terminal is already owned
+    by a parent session, the current session is a subagent and should
+    skip sounds and tab mutations.
+
+    Returns the owning session_id if found, None otherwise.
+    """
+    try:
+        for name in os.listdir(TERMINAL_ID_DIR):
+            if name == exclude_session:
+                continue
+            try:
+                existing = open(os.path.join(TERMINAL_ID_DIR, name)).read().strip()
+                if existing == term_id:
+                    return name
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return None
+
+
 def get_terminal_id(session_id: str) -> str | None:
     """Read the persisted Ghostty terminal UUID for a session."""
     try:

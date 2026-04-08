@@ -22,7 +22,15 @@ if os.environ.get("_CLAUDE_NO_SOUND"):
 DEBOUNCE_DIR = "/tmp/claude-tabtitle"
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from sound_utils import assign_unit, capture_terminal_id, log, play_sound, _get_session_unit
+from sound_utils import (
+    assign_unit,
+    capture_terminal_id,
+    is_terminal_owned,
+    log,
+    play_sound,
+    release_terminal_id,
+    _get_session_unit,
+)
 
 data = json.load(sys.stdin)
 source = data.get("source", "")
@@ -32,6 +40,14 @@ cwd = data.get("cwd", "")
 if source == "startup":
     term_id = capture_terminal_id(session_id)
     log(session_id, "session", f"startup -> captured terminal_id={term_id!r}")
+    # Detect subagent: if another session already owns this terminal,
+    # skip all hooks to prevent duplicate sounds and tab title clobbering
+    if term_id:
+        owner = is_terminal_owned(term_id, session_id)
+        if owner:
+            release_terminal_id(session_id)
+            log(session_id, "session", f"startup -> subagent detected (terminal owned by {owner}), skipping all hooks")
+            sys.exit(0)
     unit = assign_unit(session_id, cwd)
     log(session_id, "session", f"startup -> assigned unit={unit!r}")
     if unit:
