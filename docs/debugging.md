@@ -296,3 +296,120 @@ Sounds are tightly coupled to state changes:
 | `session-end-hook.py` | `SessionEnd` | (none) | 1s | no |
 
 All hooks except `session-end-hook.py` run async to avoid blocking the Claude Code UI.
+
+---
+
+## Pi Runtime Support
+
+`ghostty-peon` can also be installed as a Pi extension by this repository's installer:
+
+```sh
+node install.js --target pi --yes
+```
+
+The installer writes a small TypeScript extension to:
+
+```text
+~/.pi/agent/extensions/ghostty-peon/
+  index.ts
+  repo -> /path/to/ghostty-peon
+```
+
+After installing or uninstalling the Pi target, run `/reload` in Pi or restart Pi.
+
+### Pi Event Mapping
+
+Pi does not use Claude Code's `settings.json` hook system. The Pi extension maps Pi events to the same Python scripts used by Claude Code:
+
+| Pi event / integration | Python script | Notes |
+|---|---|---|
+| `session_start` | `session-sound-hook.py` | startup/new/fork => `source: "startup"`; resume => `source: "resume"`; reload skipped |
+| `session_shutdown` | `session-end-hook.py` | skipped on reload |
+| `before_agent_start` | `tabtitle-hook.py` | uses Claude-like `UserPromptSubmit` payload |
+| `tool_call` AskUserQuestion | `tab-attention-hook.py` | uses Claude-like `PreToolUse` payload |
+| `tool_result` | `tab-attention-hook.py` | uses Claude-like `PostToolUse` payload |
+| `agent_end` | `tab-stop-question-hook.py` | uses Claude-like `Stop` payload |
+| `ghostty-peon:permission` | `tab-attention-hook.py` | optional event bus integration for 🔥 |
+
+The extension runs only in interactive Ghostty sessions so non-interactive Pi runs do not play sounds or attempt AppleScript tab changes.
+
+### Pi Logs and State
+
+Pi uses a separate runtime namespace from Claude Code:
+
+```text
+/tmp/pi-tab-hooks.log
+/tmp/pi-tab-hooks.prev.log
+/tmp/pi-tab-hooks.lastdate
+/tmp/pi-tabtitle/
+/tmp/pi-tabterminal/
+/tmp/pi-sound-units/
+/tmp/pi-sound-session/
+/tmp/pi-sound-last/
+~/.ghostty-peon/pi-weights.json
+```
+
+Claude Code continues to use `/tmp/claude-*` paths and `~/.ghostty-peon/weights.json`.
+
+### Pi Sound Class Lookup
+
+For Pi sessions, the extension resolves `PEON_SOUND_CLASS` as follows:
+
+1. Nearest ancestor `.pi/settings.local.json`.
+2. Only if no `.pi/settings.local.json` exists, nearest ancestor `.claude/settings.local.json`.
+3. Otherwise environment/default behavior.
+
+If a nearest `.pi/settings.local.json` exists but has no `env.PEON_SOUND_CLASS`, that file wins and Claude settings are not used as fallback.
+
+Use the helper to set project-local sound classes:
+
+```sh
+peon-class --target pi undead
+peon-class --target both random
+```
+
+### Pi Permission Emoji Integration
+
+Claude Code has a native `PermissionRequest` hook, so 🔥 works automatically there. Pi does not expose one universal permission event. For 🔥 in Pi, a security/permission extension must emit `ghostty-peon:permission` events:
+
+```ts
+pi.events.emit("ghostty-peon:permission", {
+  phase: "start",
+  sessionId: ctx.sessionManager.getSessionId(),
+  cwd: ctx.cwd,
+  toolName: event.toolName,
+});
+
+try {
+  // show permission UI
+} finally {
+  pi.events.emit("ghostty-peon:permission", {
+    phase: "end",
+    sessionId: ctx.sessionManager.getSessionId(),
+    cwd: ctx.cwd,
+    toolName: event.toolName,
+  });
+}
+```
+
+Without this optional integration, Pi still supports session sounds, tab titles, 🌀 working, ⭐ questions, and 🌿 ready.
+
+### Verifying Pi Install
+
+```sh
+ls -l ~/.pi/agent/extensions/ghostty-peon
+readlink ~/.pi/agent/extensions/ghostty-peon/repo
+```
+
+Expected:
+
+- `index.ts` exists and contains `Managed by ghostty-peon install.js`.
+- `repo` points to this repository checkout.
+- `/tmp/pi-tab-hooks.log` receives `runner` and hook log lines after Pi events.
+
+To clear Pi logs/state during debugging:
+
+```sh
+> /tmp/pi-tab-hooks.log
+rm -rf /tmp/pi-tabtitle /tmp/pi-tabterminal /tmp/pi-sound-units /tmp/pi-sound-session /tmp/pi-sound-last
+```
