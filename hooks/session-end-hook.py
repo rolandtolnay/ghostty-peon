@@ -11,7 +11,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from sound_utils import log, release_terminal_id, release_unit, set_tab_title, strip_all_emojis
+from sound_utils import DEBOUNCE_DIR, log, release_terminal_id, release_unit, set_tab_title, strip_all_emojis
 
 data = json.load(sys.stdin)
 session_id = data.get("session_id", "unknown")
@@ -21,8 +21,7 @@ cwd = data.get("cwd", "")
 # If a plan was just accepted, preserve the current title instead of
 # resetting to the folder name — the new session will generate a fresh
 # title (with sound) on the first user message.
-debounce_dir = "/tmp/claude-tabtitle"
-debounce_path = os.path.join(debounce_dir, session_id)
+debounce_path = os.path.join(DEBOUNCE_DIR, session_id)
 plan_accepted = False
 try:
     lines = open(debounce_path).read().strip().split("\n")
@@ -52,7 +51,7 @@ if not plan_accepted:
 # Clean up debounce and origin files
 for suffix in ("", ".origin"):
     try:
-        os.remove(os.path.join(debounce_dir, f"{session_id}{suffix}"))
+        os.remove(os.path.join(DEBOUNCE_DIR, f"{session_id}{suffix}"))
     except OSError:
         pass
 

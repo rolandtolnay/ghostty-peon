@@ -5,3 +5,4 @@ state/
 .env
 .env.*
 *.log
+.pi/settings.local.json

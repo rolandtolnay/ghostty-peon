@@ -19,10 +19,9 @@ if os.environ.get("_CLAUDE_HOOK_NESTED"):
 if os.environ.get("_CLAUDE_NO_SOUND"):
     sys.exit(0)
 
-DEBOUNCE_DIR = "/tmp/claude-tabtitle"
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from sound_utils import (
+    DEBOUNCE_DIR,
     assign_unit,
     capture_terminal_id,
     is_terminal_owned,

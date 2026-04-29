@@ -1,7 +1,7 @@
 """Shared utilities for Claude Code Ghostty hooks.
 
 Provides sound playback with per-session unit assignment,
-and shared logging to /tmp/claude-tab-hooks.log.
+and shared logging to a configurable hook log.
 """
 
 import datetime
@@ -12,10 +12,24 @@ import random
 import subprocess
 import tempfile
 
-LOG_FILE = "/tmp/claude-tab-hooks.log"
-SOUND_LAST_DIR = "/tmp/claude-sound-last"
-_LOG_DATE_FILE = "/tmp/claude-tab-hooks.lastdate"
-LOG_PREV_FILE = "/tmp/claude-tab-hooks.prev.log"
+def _namespace() -> str:
+    """Runtime namespace for tmp/state paths. Defaults preserve Claude behavior."""
+    value = os.environ.get("GHOSTTY_PEON_NAMESPACE", "claude").strip().lower()
+    return value or "claude"
+
+
+def _tmp_path(name: str) -> str:
+    return f"/tmp/{_namespace()}-{name}"
+
+
+def _env_path(name: str, default: str) -> str:
+    return os.environ.get(name, default)
+
+
+LOG_FILE = _env_path("GHOSTTY_PEON_LOG_FILE", _tmp_path("tab-hooks.log"))
+SOUND_LAST_DIR = _env_path("GHOSTTY_PEON_SOUND_LAST_DIR", _tmp_path("sound-last"))
+_LOG_DATE_FILE = _env_path("GHOSTTY_PEON_LOG_DATE_FILE", _tmp_path("tab-hooks.lastdate"))
+LOG_PREV_FILE = _env_path("GHOSTTY_PEON_LOG_PREV_FILE", _tmp_path("tab-hooks.prev.log"))
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SOUNDS_DIR = os.path.join(REPO_ROOT, "sounds")
@@ -37,14 +51,17 @@ EMOJI_BLOCKED = "\U0001f525"  # 🔥 — permission prompt
 EMOJI_READY = "\U0001f33f"    # 🌿 — done, no input needed
 ALL_EMOJIS = (EMOJI_BLOCKED, EMOJI_QUESTION, EMOJI_WORKING, EMOJI_READY)
 
-DEBOUNCE_DIR = "/tmp/claude-tabtitle"
+DEBOUNCE_DIR = _env_path("GHOSTTY_PEON_DEBOUNCE_DIR", _tmp_path("tabtitle"))
 
-UNIT_ASSIGN_DIR = "/tmp/claude-sound-units"
-SESSION_INDEX_DIR = "/tmp/claude-sound-session"
+UNIT_ASSIGN_DIR = _env_path("GHOSTTY_PEON_UNIT_ASSIGN_DIR", _tmp_path("sound-units"))
+SESSION_INDEX_DIR = _env_path("GHOSTTY_PEON_SESSION_INDEX_DIR", _tmp_path("sound-session"))
 STALE_HOURS = 12
 
-WEIGHT_STATE_DIR = os.path.expanduser("~/.ghostty-peon")
-WEIGHT_STATE_FILE = os.path.join(WEIGHT_STATE_DIR, "weights.json")
+WEIGHT_STATE_DIR = os.path.expanduser(_env_path("GHOSTTY_PEON_WEIGHT_STATE_DIR", "~/.ghostty-peon"))
+_DEFAULT_WEIGHT_FILE = "weights.json" if _namespace() == "claude" else f"{_namespace()}-weights.json"
+WEIGHT_STATE_FILE = os.path.expanduser(
+    _env_path("GHOSTTY_PEON_WEIGHT_STATE_FILE", os.path.join(WEIGHT_STATE_DIR, _DEFAULT_WEIGHT_FILE))
+)
 
 
 def _rotate_log_on_new_day() -> None:
@@ -327,7 +344,7 @@ def _get_session_unit(session_id: str) -> tuple[str, str] | None:
     return None
 
 
-TERMINAL_ID_DIR = "/tmp/claude-tabterminal"
+TERMINAL_ID_DIR = _env_path("GHOSTTY_PEON_TERMINAL_ID_DIR", _tmp_path("tabterminal"))
 
 
 def capture_terminal_id(session_id: str) -> str | None:
