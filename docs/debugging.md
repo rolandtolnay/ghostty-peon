@@ -10,14 +10,14 @@ Architecture details, log format, and troubleshooting for ghostty-peon hooks.
 settings.json hooks config
     │
     ├─ PreToolUse
-    │    └─ AskUserQuestion ─► tab-attention-hook.py ──► add ⭐ + input.required sound
+    │    └─ AskUserQuestion/question ─► tab-attention-hook.py ──► add ⭐ + input.required sound
     │
     ├─ UserPromptSubmit ──────► tabtitle-hook.py ──► Ollama slug ──► set title + task.acknowledge sound
     │
-    ├─ PermissionRequest ────► tab-attention-hook.py ──► add 🔥 + input.required sound (skips AskUserQuestion)
+    ├─ PermissionRequest ────► tab-attention-hook.py ──► add 🔥 + input.required sound (skips question tools)
     │
     ├─ PostToolUse
-    │    └─ AskUserQuestion ──► tab-attention-hook.py ──► clear emoji → restore 🌀
+    │    └─ AskUserQuestion/question ─► tab-attention-hook.py ──► clear emoji → restore 🌀
     │
     ├─ Stop ──────────────────► tab-stop-question-hook.py ──► Ollama question check ──► add ⭐ or 🌿
     │
@@ -155,10 +155,11 @@ Look for `attention` lines and `stop-q` lines:
 - `skip: ⭐ already showing` — emoji was already set, deduplication fired
 - No `stop-q` lines at all — the hook itself didn't fire; check `settings.json` Stop entry
 
-**Wrong emoji (🔥 instead of ⭐ for AskUserQuestion):**
+**Wrong emoji (🔥 instead of ⭐ for AskUserQuestion/question):**
 Look for `attention` lines:
-- Should see `PreToolUse:AskUserQuestion` log line first, then `skip: AskUserQuestion handled by PreToolUse` for the PermissionRequest
-- If `PreToolUse` line is missing, the `PreToolUse[AskUserQuestion]` hook entry may be missing from `settings.json`
+- Claude Code should log `PreToolUse:AskUserQuestion`; Pi should log `PreToolUse:question`
+- PermissionRequest for either question tool should log `skip: ... handled by PreToolUse`
+- If `PreToolUse` is missing, the question-tool hook/extension mapping may be missing
 
 **Sound not playing:**
 Look for `sound` lines in the log:
@@ -227,9 +228,9 @@ The slug prompt asks the model to output a 2-5 word hyphenated slug or `KEEP` if
 
 ### `tab-attention-hook.py` (attention emoji + clear)
 
-Registered on three events via separate entries in `settings.json`:
-- `PreToolUse[AskUserQuestion]` → ⭐
-- `PermissionRequest` → 🔥 (skips AskUserQuestion since PreToolUse handles it)
+Registered on three events via separate entries in `settings.json` / Pi extension events:
+- `PreToolUse[AskUserQuestion]` or Pi `tool_call:question` → ⭐
+- `PermissionRequest` → 🔥 (skips question tools since PreToolUse handles them)
 - `PostToolUse` → clears emoji, restores 🌀
 
 ### `tab-stop-question-hook.py` (Stop)
@@ -270,7 +271,7 @@ Sounds are tightly coupled to state changes:
 - `input.required`: Only when the emoji state actually changes (existing emoji = skip)
 - `session.start`: Only on startup/clear (not on resume with existing assignment)
 
-**AskUserQuestion deduplication**: `AskUserQuestion` fires both `PreToolUse` and `PermissionRequest`. The `PermissionRequest` handler checks `tool_name` and skips `AskUserQuestion`, so only `PreToolUse` handles it (with ⭐, not 🔥).
+**Question-tool deduplication**: `AskUserQuestion` (Claude Code) / `question` (Pi) can fire both `PreToolUse` and `PermissionRequest`. The `PermissionRequest` handler checks `tool_name` and skips question tools, so only `PreToolUse` handles them (with ⭐, not 🔥).
 
 ### Sound Playback
 
@@ -287,7 +288,7 @@ Sounds are tightly coupled to state changes:
 
 | Hook Script | Event | Matcher | Timeout | Async |
 |-------------|-------|---------|---------|-------|
-| `tab-attention-hook.py` | `PreToolUse` | `AskUserQuestion` | 5s | yes |
+| `tab-attention-hook.py` | `PreToolUse` | `AskUserQuestion` / Pi `question` | 5s | yes |
 | `tabtitle-hook.py` | `UserPromptSubmit` | (none) | 30s | yes |
 | `tab-attention-hook.py` | `PermissionRequest` | (none) | 5s | yes |
 | `tab-attention-hook.py` | `PostToolUse` | (none) | 5s | yes |
@@ -326,7 +327,7 @@ Pi does not use Claude Code's `settings.json` hook system. The Pi extension maps
 | `session_start` | `session-sound-hook.py` | startup/new/fork => `source: "startup"`; resume => `source: "resume"`; reload skipped |
 | `session_shutdown` | `session-end-hook.py` | skipped on reload |
 | `before_agent_start` | `tabtitle-hook.py` | uses Claude-like `UserPromptSubmit` payload |
-| `tool_call` AskUserQuestion | `tab-attention-hook.py` | uses Claude-like `PreToolUse` payload |
+| `tool_call` `question` | `tab-attention-hook.py` | uses Claude-like `PreToolUse` payload |
 | `tool_result` | `tab-attention-hook.py` | uses Claude-like `PostToolUse` payload |
 | `agent_end` | `tab-stop-question-hook.py` | uses Claude-like `Stop` payload |
 | `ghostty-peon:permission` | `tab-attention-hook.py` | optional event bus integration for 🔥 |

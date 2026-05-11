@@ -266,6 +266,10 @@ function mapSessionStartReason(reason: string) {
 	return "startup";
 }
 
+function isQuestionToolName(toolName: string) {
+	return toolName === "AskUserQuestion" || toolName === "question";
+}
+
 function handlePermissionEvent(data: unknown) {
 	const event = data as PermissionEvent;
 	if (!event || !event.sessionId || !event.cwd || !isInteractiveGhosttyEnvOnly()) return;
@@ -339,13 +343,13 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_call", async (event: ToolCallEvent, ctx) => {
-		if (!isInteractiveGhostty(ctx) || event.toolName !== "AskUserQuestion") return undefined;
+		if (!isInteractiveGhostty(ctx) || !isQuestionToolName(event.toolName)) return undefined;
 		await runHook(
 			"tab-attention-hook.py",
 			{
 				...basePayload(ctx),
 				hook_event_name: "PreToolUse",
-				tool_name: "AskUserQuestion",
+				tool_name: event.toolName,
 			},
 			ctx.cwd,
 			sessionId(ctx),

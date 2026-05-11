@@ -4,7 +4,7 @@ import json
 import urllib.request
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
-MODEL = "qwen3.5:4b"
+MODEL = "gemma4:e4b"
 DEFAULT_CTX = 8192
 
 
