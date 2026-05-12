@@ -256,8 +256,8 @@ def generate_slug(
 
 
 def is_valid_slug(slug: str) -> bool:
-    """Reject anything that isn't a clean 1-5 word hyphenated slug."""
-    if len(slug) > 40:
+    """Reject anything that isn't a clean hyphenated slug."""
+    if len(slug) > 60:
         return False
     if " " in slug:
         return False
