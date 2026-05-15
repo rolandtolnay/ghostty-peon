@@ -10,6 +10,7 @@
 import json
 import os
 import sys
+import time
 
 # Guard against recursive execution from claude -p subprocesses
 if os.environ.get("_CLAUDE_HOOK_NESTED"):
@@ -24,10 +25,12 @@ from sound_utils import (
     DEBOUNCE_DIR,
     assign_unit,
     capture_terminal_id,
+    consume_plan_handoff,
     is_terminal_owned,
     log,
     play_sound,
     release_terminal_id,
+    set_tab_title,
     _get_session_unit,
 )
 
@@ -35,6 +38,27 @@ data = json.load(sys.stdin)
 source = data.get("source", "")
 session_id = data.get("session_id", "unknown")
 cwd = data.get("cwd", "")
+
+
+def apply_plan_handoff(term_id: str | None) -> None:
+    """Seed the new Claude session after plan-mode accepts and rolls sessions."""
+    if not term_id:
+        return
+    title = consume_plan_handoff(term_id)
+    if not title:
+        return
+    try:
+        os.makedirs(DEBOUNCE_DIR, exist_ok=True)
+        with open(os.path.join(DEBOUNCE_DIR, session_id), "w") as f:
+            f.write(f"{time.time()}\n{title}")
+    except OSError as e:
+        log(session_id, "session", f"plan handoff debounce write failed: {e}")
+        return
+    if set_tab_title(title, session_id):
+        log(session_id, "session", f"plan handoff restored title {title!r}")
+    else:
+        log(session_id, "session", "plan handoff set_tab_title failed")
+
 
 if source == "startup":
     term_id = capture_terminal_id(session_id)
@@ -49,6 +73,7 @@ if source == "startup":
             sys.exit(0)
     unit = assign_unit(session_id, cwd)
     log(session_id, "session", f"startup -> assigned unit={unit!r}")
+    apply_plan_handoff(term_id)
     if unit:
         play_sound("session.start", session_id)
 elif source == "clear":
@@ -62,6 +87,7 @@ elif source == "clear":
     log(session_id, "session", f"clear -> re-captured terminal_id={term_id!r}")
     unit = assign_unit(session_id, cwd)
     log(session_id, "session", f"clear -> re-assigned unit={unit!r}")
+    apply_plan_handoff(term_id)
     if unit:
         play_sound("session.start", session_id)
 elif source == "resume":

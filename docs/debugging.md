@@ -251,14 +251,14 @@ Handles three `source` values:
 
 ### `session-end-hook.py` (SessionEnd)
 
-1. Checks debounce file for `planpending` flag — if set, preserves title instead of resetting
+1. Checks debounce file for `planpending` flag — if set, preserves the title as 🌀 working and writes a terminal-scoped handoff
 2. Otherwise resets tab title to folder name
 3. Cleans up debounce + origin files
 4. Releases unit assignment and terminal UUID
 
 ### Plan Acceptance
 
-`PostToolUse:ExitPlanMode` never fires in Claude Code, so plan acceptance is handled via the `planpending` flag in the debounce file. When `PermissionRequest:ExitPlanMode` fires, the flag is written. `session-end-hook.py` reads this flag and preserves the current title instead of resetting to the folder name.
+`PostToolUse:ExitPlanMode` never fires in Claude Code, so plan acceptance is handled via the `planpending` flag in the debounce file. When `PermissionRequest:ExitPlanMode` fires, the flag is written. `session-end-hook.py` reads this flag, converts the title back to 🌀 working, and writes a short-lived handoff keyed by the Ghostty terminal UUID. The next `SessionStart:clear/startup` consumes that handoff and seeds the new session's debounce file so post-plan tool hooks keep working with the same title.
 
 ### Recursion Guard: `_CLAUDE_HOOK_NESTED`
 

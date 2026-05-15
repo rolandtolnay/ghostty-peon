@@ -11,6 +11,7 @@ import os
 import random
 import subprocess
 import tempfile
+import time
 
 def _namespace() -> str:
     """Runtime namespace for tmp/state paths. Defaults preserve Claude behavior."""
@@ -52,6 +53,7 @@ EMOJI_READY = "\U0001f33f"    # 🌿 — done, no input needed
 ALL_EMOJIS = (EMOJI_BLOCKED, EMOJI_QUESTION, EMOJI_WORKING, EMOJI_READY)
 
 DEBOUNCE_DIR = _env_path("GHOSTTY_PEON_DEBOUNCE_DIR", _tmp_path("tabtitle"))
+PLAN_HANDOFF_DIR = _env_path("GHOSTTY_PEON_PLAN_HANDOFF_DIR", _tmp_path("plan-handoff"))
 
 UNIT_ASSIGN_DIR = _env_path("GHOSTTY_PEON_UNIT_ASSIGN_DIR", _tmp_path("sound-units"))
 SESSION_INDEX_DIR = _env_path("GHOSTTY_PEON_SESSION_INDEX_DIR", _tmp_path("sound-session"))
@@ -419,6 +421,45 @@ def release_terminal_id(session_id: str) -> None:
         os.remove(os.path.join(TERMINAL_ID_DIR, session_id))
     except OSError:
         pass
+
+
+def _plan_handoff_path(term_id: str) -> str:
+    key = hashlib.sha256(term_id.encode("utf-8")).hexdigest()[:24]
+    return os.path.join(PLAN_HANDOFF_DIR, key)
+
+
+def write_plan_handoff(term_id: str, title: str) -> bool:
+    """Persist a short-lived title handoff for Claude plan-mode session rollover."""
+    try:
+        os.makedirs(PLAN_HANDOFF_DIR, exist_ok=True)
+        with open(_plan_handoff_path(term_id), "w") as f:
+            json.dump({"timestamp": time.time(), "title": title}, f)
+        return True
+    except OSError:
+        return False
+
+
+def consume_plan_handoff(term_id: str, ttl_seconds: int = 120) -> str | None:
+    """Read and delete a fresh plan handoff for a terminal, if one exists."""
+    path = _plan_handoff_path(term_id)
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+    title = data.get("title") if isinstance(data, dict) else None
+    timestamp = data.get("timestamp") if isinstance(data, dict) else None
+    if not isinstance(title, str) or not title.strip():
+        return None
+    if not isinstance(timestamp, (int, float)) or time.time() - float(timestamp) > ttl_seconds:
+        return None
+    return title.strip()
 
 
 def set_tab_title(title: str, session_id: str | None = None) -> bool:
