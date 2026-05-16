@@ -384,13 +384,11 @@ def capture_terminal_id(session_id: str) -> str | None:
 
 
 def is_terminal_owned(term_id: str, exclude_session: str) -> str | None:
-    """Check if another active session already owns this terminal.
+    """Check if another session already owns this terminal.
 
-    Used to detect subagent sessions: if the terminal is already owned
-    by a parent session, the current session is a subagent and should
-    skip sounds and tab mutations.
-
-    Returns the owning session_id if found, None otherwise.
+    Returns the owning session_id if found, None otherwise. Callers decide
+    whether the owner means "nested subagent" or "replacement session in the
+    same Ghostty tab" based on runtime/lifecycle context.
     """
     try:
         for name in os.listdir(TERMINAL_ID_DIR):
@@ -405,6 +403,23 @@ def is_terminal_owned(term_id: str, exclude_session: str) -> str | None:
     except OSError:
         pass
     return None
+
+
+def clear_terminal_owner(term_id: str, exclude_session: str) -> str | None:
+    """Remove a stale/replaced terminal owner and return its session id.
+
+    Pi frequently replaces sessions in-place for fork/resume flows. In that
+    world, terminal ownership is terminal-scoped and the newest interactive
+    session should win. Claude keeps the older subagent-protection behavior.
+    """
+    owner = is_terminal_owned(term_id, exclude_session)
+    if not owner:
+        return None
+    try:
+        os.remove(os.path.join(TERMINAL_ID_DIR, owner))
+    except OSError:
+        pass
+    return owner
 
 
 def get_terminal_id(session_id: str) -> str | None:

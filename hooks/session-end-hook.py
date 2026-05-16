@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Clean up session state on session end.
 
-- Release unit assignment
-- Reset Ghostty tab title to the working directory name (unless plan was just accepted)
-- Release terminal ID
+Claude treats SessionEnd as terminal teardown. Pi has richer replacement flows
+(new/resume/fork/compact), so Pi keeps per-session title debounce state and only
+uses terminal-scoped handoff where a replacement session should inherit the tab
+label immediately.
 """
 
 import json
@@ -21,44 +22,64 @@ from sound_utils import (
     set_tab_title,
     strip_all_emojis,
     write_plan_handoff,
+    _namespace,
 )
 
 data = json.load(sys.stdin)
 session_id = data.get("session_id", "unknown")
 cwd = data.get("cwd", "")
+shutdown_reason = data.get("shutdown_reason", "")
 
-# Check debounce file for planpending flag before cleanup deletes it.
-# If a plan was just accepted, preserve the current title instead of
-# resetting to the folder name — the new session will generate a fresh
-# title (with sound) on the first user message.
-debounce_path = os.path.join(DEBOUNCE_DIR, session_id)
-plan_accepted = False
-try:
-    lines = open(debounce_path).read().strip().split("\n")
-    if len(lines) >= 3 and lines[2] == "planpending":
-        plan_accepted = True
-        raw_title = lines[1] if len(lines) >= 2 else ""
-        clean_title = strip_all_emojis(raw_title)
-        if clean_title:
-            working_title = f"{EMOJI_WORKING} {clean_title}"
-            term_id = get_terminal_id(session_id)
-            if set_tab_title(working_title, session_id):
-                log(session_id, "session", f"end -> plan accepted, title kept as {working_title!r}")
-            else:
-                log(session_id, "session", "end -> plan accepted, set_tab_title failed")
-            if term_id and write_plan_handoff(term_id, working_title):
-                log(session_id, "session", "end -> plan handoff written")
-            elif term_id:
-                log(session_id, "session", "end -> plan handoff write failed")
-            else:
-                log(session_id, "session", "end -> plan accepted but no terminal id for handoff")
+
+def read_debounce_lines() -> list[str]:
+    try:
+        return open(os.path.join(DEBOUNCE_DIR, session_id)).read().strip().split("\n")
+    except OSError:
+        return []
+
+
+def current_clean_title(lines: list[str]) -> str:
+    raw_title = lines[1] if len(lines) >= 2 else ""
+    return strip_all_emojis(raw_title)
+
+
+lines = read_debounce_lines()
+clean_title = current_clean_title(lines)
+term_id = get_terminal_id(session_id)
+is_pi = _namespace() == "pi"
+
+# Check debounce file for planpending flag before cleanup.
+plan_accepted = len(lines) >= 3 and lines[2] == "planpending"
+if plan_accepted:
+    if clean_title:
+        working_title = f"{EMOJI_WORKING} {clean_title}"
+        if set_tab_title(working_title, session_id):
+            log(session_id, "session", f"end -> plan accepted, title kept as {working_title!r}")
         else:
-            log(session_id, "session", "end -> plan accepted but no title to preserve")
-except OSError:
-    pass
+            log(session_id, "session", "end -> plan accepted, set_tab_title failed")
+        if term_id and write_plan_handoff(term_id, working_title):
+            log(session_id, "session", "end -> plan handoff written")
+        elif term_id:
+            log(session_id, "session", "end -> plan handoff write failed")
+        else:
+            log(session_id, "session", "end -> plan accepted but no terminal id for handoff")
+    else:
+        log(session_id, "session", "end -> plan accepted but no title to preserve")
 
-if not plan_accepted:
-    # Reset tab title to directory name before releasing terminal ID
+# Pi replacement flows keep the visible title while the next session starts in
+# the same tab. Normal quit is terminal teardown and should reset the title.
+if is_pi and shutdown_reason == "fork" and not plan_accepted and clean_title and term_id:
+    handoff_title = f"{EMOJI_WORKING} {clean_title}"
+    if write_plan_handoff(term_id, handoff_title):
+        log(session_id, "session", f"end -> fork handoff written {handoff_title!r}")
+    else:
+        log(session_id, "session", "end -> fork handoff write failed")
+
+replacement_flow = is_pi and shutdown_reason in {"fork", "resume", "new"}
+if replacement_flow:
+    log(session_id, "session", f"end -> preserved tab title for Pi {shutdown_reason}")
+elif not plan_accepted:
+    # Reset tab title to directory name before releasing terminal ID.
     folder_name = os.path.basename(cwd) if cwd else ""
     if folder_name:
         if set_tab_title(folder_name, session_id):
@@ -66,13 +87,19 @@ if not plan_accepted:
         else:
             log(session_id, "session", "end -> set_tab_title failed on reset")
 
-# Clean up debounce and origin files
-for suffix in ("", ".origin"):
-    try:
-        os.remove(os.path.join(DEBOUNCE_DIR, f"{session_id}{suffix}"))
-    except OSError:
-        pass
+# Keep debounce/origin only for Pi replacement flows. On normal quit, reset and
+# clean up just like Claude so an inactive tab does not resurrect stale work.
+if is_pi and replacement_flow:
+    log(session_id, "session", f"end -> kept debounce state for Pi replacement (reason={shutdown_reason!r})")
+else:
+    for suffix in ("", ".origin"):
+        try:
+            os.remove(os.path.join(DEBOUNCE_DIR, f"{session_id}{suffix}"))
+        except OSError:
+            pass
+    if is_pi:
+        log(session_id, "session", f"end -> cleaned debounce state for Pi (reason={shutdown_reason!r})")
 
 release_unit(session_id, cwd)
 release_terminal_id(session_id)
-log(session_id, "session", "end -> cleaned up debounce, unit + terminal_id released")
+log(session_id, "session", "end -> unit + terminal_id released")

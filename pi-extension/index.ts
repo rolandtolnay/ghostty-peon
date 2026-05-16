@@ -10,7 +10,7 @@ import type {
 	ExtensionContext,
 	ToolCallEvent,
 	ToolResultEvent,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 const EXT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolveRepoRoot();
@@ -22,6 +22,7 @@ const HOOK_TIMEOUT_MS = 15_000;
 const FAST_HOOK_TIMEOUT_MS = 5_000;
 const SESSION_HOOK_TIMEOUT_MS = 8_000;
 const TABTITLE_BARRIER_MS = 2_500;
+const HOOK_KILL_GRACE_MS = 2_000;
 
 const REQUIRED_HOOKS = [
 	"session-sound-hook.py",
@@ -71,20 +72,21 @@ function runnerLog(sessionId: string | undefined, message: string) {
 	}
 }
 
+function logMissingHookOnce(sessionId: string | undefined, message: string) {
+	if (missingRepoLogged) return;
+	runnerLog(sessionId, message);
+	missingRepoLogged = true;
+}
+
 function hooksAvailable(sessionId?: string) {
 	if (!existsSync(HOOKS_DIR)) {
-		if (!missingRepoLogged) {
-			runnerLog(sessionId, `disabled: missing hooks dir ${HOOKS_DIR}`);
-			missingRepoLogged = true;
-		}
+		logMissingHookOnce(sessionId, `disabled: missing hooks dir ${HOOKS_DIR}`);
 		return false;
 	}
 	for (const hook of REQUIRED_HOOKS) {
-		if (!existsSync(join(HOOKS_DIR, hook))) {
-			if (!missingRepoLogged) {
-				runnerLog(sessionId, `disabled: missing hook ${join(HOOKS_DIR, hook)}`);
-				missingRepoLogged = true;
-			}
+		const hookPath = join(HOOKS_DIR, hook);
+		if (!existsSync(hookPath)) {
+			logMissingHookOnce(sessionId, `disabled: missing hook ${hookPath}`);
 			return false;
 		}
 	}
@@ -98,12 +100,16 @@ function isGhosttyEnv() {
 	);
 }
 
+function isInteractiveGhosttyTerminal() {
+	return isGhosttyEnv() && Boolean(process.stdin.isTTY && process.stdout.isTTY);
+}
+
 function isInteractiveGhostty(ctx: ExtensionContext) {
-	return ctx.hasUI && isGhosttyEnv() && Boolean(process.stdin.isTTY && process.stdout.isTTY);
+	return ctx.hasUI && isInteractiveGhosttyTerminal();
 }
 
 function isInteractiveGhosttyEnvOnly() {
-	return isGhosttyEnv() && Boolean(process.stdin.isTTY && process.stdout.isTTY);
+	return isInteractiveGhosttyTerminal();
 }
 
 function findUp(startDir: string, relativePath: string) {
@@ -141,7 +147,7 @@ function buildHookEnv(cwd: string) {
 	const env: NodeJS.ProcessEnv = {
 		...process.env,
 		GHOSTTY_PEON_NAMESPACE: "pi",
-		GHOSTTY_PEON_LOG_FILE: "/tmp/pi-tab-hooks.log",
+		GHOSTTY_PEON_LOG_FILE: PI_LOG_FILE,
 		GHOSTTY_PEON_LOG_PREV_FILE: "/tmp/pi-tab-hooks.prev.log",
 		GHOSTTY_PEON_LOG_DATE_FILE: "/tmp/pi-tab-hooks.lastdate",
 		GHOSTTY_PEON_DEBOUNCE_DIR: "/tmp/pi-tabtitle",
@@ -172,6 +178,8 @@ function runHook(
 
 	return new Promise((resolve) => {
 		let settled = false;
+		let childClosed = false;
+		let killTimer: ReturnType<typeof setTimeout> | undefined;
 		let stderr = "";
 
 		const finish = (result: HookResult, message?: string) => {
@@ -190,6 +198,9 @@ function runHook(
 
 		const timer = setTimeout(() => {
 			child.kill("SIGTERM");
+			killTimer = setTimeout(() => {
+				if (!childClosed) child.kill("SIGKILL");
+			}, HOOK_KILL_GRACE_MS);
 			finish("timeout", `timeout ${script} after ${timeoutMs}ms`);
 		}, timeoutMs);
 
@@ -203,6 +214,8 @@ function runHook(
 		});
 
 		child.on("close", (code, signal) => {
+			childClosed = true;
+			if (killTimer) clearTimeout(killTimer);
 			if (settled) return;
 			if (code === 0) {
 				finish("ok");
@@ -225,18 +238,26 @@ function sessionId(ctx: ExtensionContext) {
 	return ctx.sessionManager.getSessionId() || "unknown";
 }
 
-function basePayload(ctx: ExtensionContext) {
+function basePayload(ctx: ExtensionContext, id = sessionId(ctx)) {
 	return {
-		session_id: sessionId(ctx),
+		session_id: id,
 		cwd: ctx.cwd,
+		session_file: ctx.sessionManager.getSessionFile() || "",
 	};
 }
 
-function waitBriefly<T>(promise: Promise<T>, timeoutMs: number) {
-	return Promise.race([
-		promise.catch(() => undefined),
-		new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), timeoutMs)),
-	]);
+async function waitBriefly<T>(promise: Promise<T>, timeoutMs: number) {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			promise.catch(() => undefined),
+			new Promise<undefined>((resolve) => {
+				timer = setTimeout(() => resolve(undefined), timeoutMs);
+			}),
+		]);
+	} finally {
+		if (timer) clearTimeout(timer);
+	}
 }
 
 function extractAssistantText(event: AgentEndEvent) {
@@ -262,7 +283,7 @@ function contentToText(content: unknown): string {
 
 function mapSessionStartReason(reason: string) {
 	if (reason === "reload") return undefined;
-	if (reason === "resume") return "resume";
+	if (reason === "resume" || reason === "new" || reason === "fork") return reason;
 	return "startup";
 }
 
@@ -270,11 +291,22 @@ function isQuestionToolName(toolName: string) {
 	return toolName === "AskUserQuestion" || toolName === "question";
 }
 
+function permissionHookEventName(phase: PermissionEvent["phase"]) {
+	switch (phase) {
+		case "start":
+			return "PermissionRequest";
+		case "end":
+			return "PostToolUse";
+		default:
+			return undefined;
+	}
+}
+
 function handlePermissionEvent(data: unknown) {
 	const event = data as PermissionEvent;
 	if (!event || !event.sessionId || !event.cwd || !isInteractiveGhosttyEnvOnly()) return;
 
-	const hookEventName = event.phase === "start" ? "PermissionRequest" : event.phase === "end" ? "PostToolUse" : undefined;
+	const hookEventName = permissionHookEventName(event.phase);
 	if (!hookEventName) return;
 
 	void runHook(
@@ -291,30 +323,66 @@ function handlePermissionEvent(data: unknown) {
 	);
 }
 
+function compactTokenCount(event: unknown) {
+	const preparation = (event as { preparation?: { tokensBefore?: unknown } }).preparation;
+	return typeof preparation?.tokensBefore === "number" ? preparation.tokensBefore : undefined;
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.events.on(PERMISSION_CHANNEL, handlePermissionEvent);
 
 	pi.on("session_start", async (event, ctx) => {
 		if (!isInteractiveGhostty(ctx)) return undefined;
+		const id = sessionId(ctx);
 		const source = mapSessionStartReason(event.reason);
+		runnerLog(id, `event session_start reason=${event.reason} source=${source ?? "skip"} file=${ctx.sessionManager.getSessionFile() ?? ""} prev=${event.previousSessionFile ?? ""}`);
 		if (!source) return undefined;
 		await runHook(
 			"session-sound-hook.py",
-			{ ...basePayload(ctx), source },
+			{ ...basePayload(ctx, id), source, pi_reason: event.reason, previous_session_file: event.previousSessionFile ?? "" },
 			ctx.cwd,
-			sessionId(ctx),
+			id,
 			{ timeoutMs: SESSION_HOOK_TIMEOUT_MS },
 		);
 		return undefined;
 	});
 
 	pi.on("session_shutdown", async (event, ctx) => {
-		if (!isInteractiveGhostty(ctx) || event.reason === "reload") return undefined;
+		if (!isInteractiveGhostty(ctx)) return undefined;
+		const id = sessionId(ctx);
+		runnerLog(id, `event session_shutdown reason=${event.reason} target=${event.targetSessionFile ?? ""}`);
+		if (event.reason === "reload") return undefined;
 		await runHook(
 			"session-end-hook.py",
-			basePayload(ctx),
+			{ ...basePayload(ctx, id), shutdown_reason: event.reason, target_session_file: event.targetSessionFile ?? "" },
 			ctx.cwd,
-			sessionId(ctx),
+			id,
+			{ timeoutMs: SESSION_HOOK_TIMEOUT_MS },
+		);
+		return undefined;
+	});
+
+	pi.on("session_before_fork", async (event, ctx) => {
+		if (!isInteractiveGhostty(ctx)) return undefined;
+		runnerLog(sessionId(ctx), `event session_before_fork entry=${event.entryId} position=${event.position}`);
+		return undefined;
+	});
+
+	pi.on("session_before_compact", async (event, ctx) => {
+		if (!isInteractiveGhostty(ctx)) return undefined;
+		runnerLog(sessionId(ctx), `event session_before_compact tokens=${compactTokenCount(event) ?? "unknown"}`);
+		return undefined;
+	});
+
+	pi.on("session_compact", async (event, ctx) => {
+		if (!isInteractiveGhostty(ctx)) return undefined;
+		const id = sessionId(ctx);
+		runnerLog(id, `event session_compact fromExtension=${Boolean(event.fromExtension)}`);
+		await runHook(
+			"session-sound-hook.py",
+			{ ...basePayload(ctx, id), source: "compact", pi_reason: "compact" },
+			ctx.cwd,
+			id,
 			{ timeoutMs: SESSION_HOOK_TIMEOUT_MS },
 		);
 		return undefined;
@@ -326,7 +394,7 @@ export default function (pi: ExtensionAPI) {
 		const pending = runHook(
 			"tabtitle-hook.py",
 			{
-				...basePayload(ctx),
+				...basePayload(ctx, id),
 				hook_event_name: "UserPromptSubmit",
 				prompt: event.prompt,
 				transcript_path: ctx.sessionManager.getSessionFile() || "",
@@ -383,7 +451,7 @@ export default function (pi: ExtensionAPI) {
 		await runHook(
 			"tab-stop-question-hook.py",
 			{
-				...basePayload(ctx),
+				...basePayload(ctx, id),
 				hook_event_name: "Stop",
 				stop_hook_active: false,
 				last_assistant_message: extractAssistantText(event),

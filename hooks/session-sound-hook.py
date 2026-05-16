@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """Handle session lifecycle events for Ghostty tab hooks.
 
-- startup: assign a unit to this session and play a Warcraft sound
-- clear: delete the debounce file and re-assign unit (SessionEnd fires before
-  SessionStart on /clear, releasing the old assignment)
-- resume: assign unit if no existing assignment (migration safety)
+Pi is treated as the primary lifecycle model:
+- startup/new/fork: capture the Ghostty terminal, assign a unit, play start sound
+- resume: capture terminal, restore existing title state, assign unit if needed
+- compact: re-capture terminal and restore the existing title after compaction
+- clear: legacy Claude-style clear support
 """
 
 import json
 import os
 import sys
-import time
 
 # Guard against recursive execution from claude -p subprocesses
 if os.environ.get("_CLAUDE_HOOK_NESTED"):
@@ -25,6 +25,7 @@ from sound_utils import (
     DEBOUNCE_DIR,
     assign_unit,
     capture_terminal_id,
+    clear_terminal_owner,
     consume_plan_handoff,
     is_terminal_owned,
     log,
@@ -32,48 +33,108 @@ from sound_utils import (
     release_terminal_id,
     set_tab_title,
     _get_session_unit,
+    _namespace,
 )
 
 data = json.load(sys.stdin)
 source = data.get("source", "")
 session_id = data.get("session_id", "unknown")
 cwd = data.get("cwd", "")
+pi_reason = data.get("pi_reason", source)
+session_file = data.get("session_file", "")
+previous_session_file = data.get("previous_session_file", "")
 
 
-def apply_plan_handoff(term_id: str | None) -> None:
-    """Seed the new Claude session after plan-mode accepts and rolls sessions."""
+def _short_path(path: str) -> str:
+    if not path:
+        return ""
+    return os.path.basename(path)
+
+
+def apply_title_handoff(term_id: str | None) -> bool:
+    """Seed the new session after a terminal-scoped title handoff."""
     if not term_id:
-        return
+        return False
     title = consume_plan_handoff(term_id)
     if not title:
-        return
+        return False
     try:
         os.makedirs(DEBOUNCE_DIR, exist_ok=True)
         with open(os.path.join(DEBOUNCE_DIR, session_id), "w") as f:
-            f.write(f"{time.time()}\n{title}")
+            # Timestamp 0 lets the first prompt after fork/plan handoff re-evaluate
+            # immediately instead of being blocked by the normal rename cooldown.
+            f.write(f"0\n{title}")
     except OSError as e:
-        log(session_id, "session", f"plan handoff debounce write failed: {e}")
-        return
+        log(session_id, "session", f"handoff debounce write failed: {e}")
+        return False
     if set_tab_title(title, session_id):
-        log(session_id, "session", f"plan handoff restored title {title!r}")
-    else:
-        log(session_id, "session", "plan handoff set_tab_title failed")
+        log(session_id, "session", f"handoff restored title {title!r}")
+        return True
+    log(session_id, "session", "handoff set_tab_title failed")
+    return False
 
 
-if source == "startup":
+def restore_existing_title() -> bool:
+    """Restore this session's persisted title, if one exists."""
+    try:
+        lines = open(os.path.join(DEBOUNCE_DIR, session_id)).read().strip().split("\n")
+    except OSError:
+        return False
+    title = lines[1].strip() if len(lines) >= 2 else ""
+    if not title:
+        return False
+    if set_tab_title(title, session_id):
+        log(session_id, "session", f"restored existing title {title!r}")
+        return True
+    log(session_id, "session", "restore existing title failed")
+    return False
+
+
+def reset_to_folder(label: str) -> bool:
+    folder_name = os.path.basename(cwd) if cwd else ""
+    if not folder_name:
+        return False
+    if set_tab_title(folder_name, session_id):
+        log(session_id, "session", f"{label} -> title reset to {folder_name!r}")
+        return True
+    log(session_id, "session", f"{label} -> set_tab_title failed on reset")
+    return False
+
+
+def capture_and_claim(label: str, replace_existing_owner: bool = False) -> str | None:
     term_id = capture_terminal_id(session_id)
-    log(session_id, "session", f"startup -> captured terminal_id={term_id!r}")
-    # Detect subagent: if another session already owns this terminal,
-    # skip all hooks to prevent duplicate sounds and tab title clobbering
-    if term_id:
-        owner = is_terminal_owned(term_id, session_id)
-        if owner:
-            release_terminal_id(session_id)
-            log(session_id, "session", f"startup -> subagent detected (terminal owned by {owner}), skipping all hooks")
-            sys.exit(0)
+    log(
+        session_id,
+        "session",
+        f"{label} -> captured terminal_id={term_id!r} "
+        f"(reason={pi_reason!r}, file={_short_path(session_file)!r}, prev={_short_path(previous_session_file)!r})",
+    )
+    if not term_id:
+        return None
+
+    owner = is_terminal_owned(term_id, session_id)
+    if not owner:
+        return term_id
+
+    if _namespace() == "pi" and replace_existing_owner:
+        replaced = clear_terminal_owner(term_id, session_id)
+        log(session_id, "session", f"{label} -> replaced terminal owner {replaced!r}")
+        return term_id
+
+    # Plain startup keeps the nested-session protection to avoid stealing a
+    # parent Pi/Claude session's terminal ownership.
+    release_terminal_id(session_id)
+    log(session_id, "session", f"{label} -> subagent detected (terminal owned by {owner}), skipping all hooks")
+    sys.exit(0)
+
+
+if source in {"startup", "new", "fork"}:
+    term_id = capture_and_claim(source, replace_existing_owner=source in {"new", "fork"})
     unit = assign_unit(session_id, cwd)
-    log(session_id, "session", f"startup -> assigned unit={unit!r}")
-    apply_plan_handoff(term_id)
+    log(session_id, "session", f"{source} -> assigned unit={unit!r}")
+    if not apply_title_handoff(term_id):
+        # Helpful for process restarts where the same persisted Pi session starts again.
+        restore_existing_title()
     if unit:
         play_sound("session.start", session_id)
 elif source == "clear":
@@ -83,21 +144,25 @@ elif source == "clear":
         log(session_id, "session", "clear -> debounce file deleted")
     except OSError:
         log(session_id, "session", "clear -> no debounce file to delete")
-    term_id = capture_terminal_id(session_id)
-    log(session_id, "session", f"clear -> re-captured terminal_id={term_id!r}")
+    term_id = capture_and_claim("clear")
     unit = assign_unit(session_id, cwd)
     log(session_id, "session", f"clear -> re-assigned unit={unit!r}")
-    apply_plan_handoff(term_id)
+    apply_title_handoff(term_id)
     if unit:
         play_sound("session.start", session_id)
 elif source == "resume":
-    term_id = capture_terminal_id(session_id)
-    log(session_id, "session", f"resume -> captured terminal_id={term_id!r}")
+    term_id = capture_and_claim("resume", replace_existing_owner=True)
+    if not apply_title_handoff(term_id) and not restore_existing_title():
+        reset_to_folder("resume")
     existing = _get_session_unit(session_id)
     if not existing:
         unit = assign_unit(session_id, cwd)
         log(session_id, "session", f"resume -> assigned unit={unit!r} (migration)")
     else:
         log(session_id, "session", f"resume -> existing unit={existing[1]!r}")
+elif source == "compact":
+    capture_and_claim("compact", replace_existing_owner=True)
+    if not restore_existing_title():
+        log(session_id, "session", "compact -> no existing title to restore")
 else:
     log(session_id, "session", f"source={source!r} (no action)")

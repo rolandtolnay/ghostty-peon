@@ -244,17 +244,28 @@ Tier 2 heuristic for detecting when Claude stops with a question.
 
 ### `session-sound-hook.py` (SessionStart)
 
-Handles three `source` values:
-- `startup`: captures terminal UUID, assigns unit via `assign_unit()`, plays `session.start`
-- `clear`: deletes debounce file, re-captures UUID, re-assigns unit
-- `resume`: captures UUID, assigns unit only if no existing assignment
+Handles Pi-first lifecycle `source` values:
+- `startup` / `new` / `fork`: captures terminal UUID, claims terminal ownership, assigns unit via `assign_unit()`, plays `session.start`
+- `resume`: captures terminal UUID, restores that session's persisted title if present, assigns unit only if no existing assignment
+- `compact`: re-captures terminal UUID and restores the persisted title after compaction
+- `clear`: legacy Claude-style clear support; deletes debounce file, re-captures UUID, re-assigns unit
+
+In the Pi namespace, explicit replacement flows (`new`, `fork`, `resume`, `compact`) may replace a stale terminal owner. Plain `startup` keeps the nested-session/subagent protection behavior so a nested Pi process does not steal the parent tab title.
 
 ### `session-end-hook.py` (SessionEnd)
 
+Claude behavior:
 1. Checks debounce file for `planpending` flag — if set, preserves the title as 🌀 working and writes a terminal-scoped handoff
 2. Otherwise resets tab title to folder name
 3. Cleans up debounce + origin files
 4. Releases unit assignment and terminal UUID
+
+Pi behavior:
+1. Keeps debounce + origin files only for replacement flows (`new`, `fork`, `resume`) so active session switches can restore titles
+2. On `/fork`, writes a terminal-scoped handoff so the replacement session inherits the visible title immediately
+3. On `/new`, `/fork`, and `/resume`, avoids resetting the tab to the folder name during replacement
+4. On normal `quit`, resets the tab title to the folder name and cleans debounce/origin state so the tab no longer appears active
+5. Releases unit assignment and terminal UUID for the outgoing process
 
 ### Plan Acceptance
 
@@ -324,12 +335,15 @@ Pi does not use Claude Code's `settings.json` hook system. The Pi extension maps
 
 | Pi event / integration | Python script | Notes |
 |---|---|---|
-| `session_start` | `session-sound-hook.py` | startup/new/fork => `source: "startup"`; resume => `source: "resume"`; reload skipped |
+| `session_start` | `session-sound-hook.py` | startup => `source: "startup"`; new => `source: "new"`; fork => `source: "fork"`; resume => `source: "resume"`; reload skipped |
 | `session_shutdown` | `session-end-hook.py` | skipped on reload |
 | `before_agent_start` | `tabtitle-hook.py` | uses Claude-like `UserPromptSubmit` payload |
 | `tool_call` `question` | `tab-attention-hook.py` | uses Claude-like `PreToolUse` payload |
 | `tool_result` | `tab-attention-hook.py` | uses Claude-like `PostToolUse` payload |
 | `agent_end` | `tab-stop-question-hook.py` | uses Claude-like `Stop` payload |
+| `session_before_fork` | runner log only | records fork intent before replacement |
+| `session_before_compact` | runner log only | records compaction intent and token count when available |
+| `session_compact` | `session-sound-hook.py` | re-captures terminal id and restores existing title after compaction |
 | `ghostty-peon:permission` | `tab-attention-hook.py` | optional event bus integration for 🔥 |
 
 The extension runs only in interactive Ghostty sessions so non-interactive Pi runs do not play sounds or attempt AppleScript tab changes.
@@ -344,11 +358,14 @@ Pi uses a separate runtime namespace from Claude Code:
 /tmp/pi-tab-hooks.lastdate
 /tmp/pi-tabtitle/
 /tmp/pi-tabterminal/
+/tmp/pi-plan-handoff/
 /tmp/pi-sound-units/
 /tmp/pi-sound-session/
 /tmp/pi-sound-last/
 ~/.ghostty-peon/pi-weights.json
 ```
+
+Pi runner log lines include lifecycle metadata such as `event session_start reason=...`, `event session_shutdown reason=...`, `event session_before_fork`, and `event session_compact`. Use these with the session suffix to distinguish normal startup, trust/new-session flows, fork replacement, resume, and compaction.
 
 Claude Code continues to use `/tmp/claude-*` paths and `~/.ghostty-peon/weights.json`.
 
@@ -412,5 +429,5 @@ To clear Pi logs/state during debugging:
 
 ```sh
 > /tmp/pi-tab-hooks.log
-rm -rf /tmp/pi-tabtitle /tmp/pi-tabterminal /tmp/pi-sound-units /tmp/pi-sound-session /tmp/pi-sound-last
+rm -rf /tmp/pi-tabtitle /tmp/pi-tabterminal /tmp/pi-plan-handoff /tmp/pi-sound-units /tmp/pi-sound-session /tmp/pi-sound-last
 ```
