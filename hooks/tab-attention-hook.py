@@ -29,25 +29,16 @@ from sound_utils import (
     log,
     set_attention_emoji,
     set_status_emoji,
-    set_tab_title,
     strip_all_emojis,
 )
 
 
-def get_debounce_path(session_id: str) -> str:
-    return title_state.debounce_path(session_id)
-
-
-def read_debounce(session_id: str) -> tuple[str, str, str]:
-    """Read timestamp, raw title, and plan state from debounce file.
-
-    Plan state: '' (none), 'planpending' (set at PermissionRequest:ExitPlanMode,
-    consumed by session-end-hook.py to skip title reset).
-    """
+def read_debounce(session_id: str) -> tuple[str, str]:
+    """Read timestamp and raw title from debounce file."""
     state = title_state.read(session_id)
     if state.has_title:
-        return state.timestamp, state.title, state.plan_state
-    return "0", "", ""
+        return state.timestamp, state.title
+    return "0", ""
 
 
 def write_debounce(session_id: str, timestamp: str, title: str, plan_state: str = "") -> None:
@@ -83,7 +74,7 @@ def main():
     event = data.get("hook_event_name", "")
     session_id = data.get("session_id", "unknown")
 
-    timestamp, raw_title, plan_state = read_debounce(session_id)
+    timestamp, raw_title = read_debounce(session_id)
     clean_title = strip_emoji(raw_title)
 
     # Determine which action to take

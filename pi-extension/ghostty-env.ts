@@ -24,10 +24,6 @@ export function isInteractiveGhostty(ctx: ExtensionContext) {
 	return ctx.hasUI && isInteractiveGhosttyTerminal();
 }
 
-export function isInteractiveGhosttyEnvOnly() {
-	return isInteractiveGhosttyTerminal();
-}
-
 function findUp(startDir: string, relativePath: string) {
 	let dir = startDir || process.cwd();
 	while (true) {

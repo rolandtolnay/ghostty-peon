@@ -26,7 +26,6 @@ from sound_utils import (
     log,
     play_sound,
     set_status_emoji,
-    set_tab_title,
     strip_all_emojis,
 )
 
@@ -38,14 +37,6 @@ MAX_MSG_CHARS = 3000
 IGNORED_PROMPTS = [
     "/commit-commands:commit",
 ]
-
-
-def get_debounce_path(session_id: str) -> str:
-    return title_state.debounce_path(session_id)
-
-
-def get_origin_path(session_id: str) -> str:
-    return title_state.origin_path(session_id)
 
 
 def should_skip(session_id: str, prompt: str) -> str | None:
@@ -68,35 +59,6 @@ def should_skip(session_id: str, prompt: str) -> str | None:
         pass
 
     return None
-
-
-def get_current_title(debounce_path: str) -> str:
-    """Read the current title from the debounce file (second line)."""
-    session_id = os.path.basename(debounce_path)
-    return strip_emoji(title_state.read(session_id).title)
-
-
-def get_debounce_timestamp(debounce_path: str) -> str:
-    session_id = os.path.basename(debounce_path)
-    return title_state.read(session_id).timestamp
-
-
-def write_debounce(debounce_path: str, timestamp: str, title: str, session_id: str = "") -> None:
-    try:
-        title_state.write(os.path.basename(debounce_path), timestamp, title)
-    except OSError as e:
-        if session_id:
-            log(session_id, "tabtitle", f"debounce write failed: {e}")
-
-
-def get_origin_message(session_id: str) -> str:
-    """Read the origin message that established the current title."""
-    return title_state.read_origin(session_id)
-
-
-def write_origin_message(session_id: str, message: str) -> None:
-    """Store the message that established the current title."""
-    title_state.write_origin(session_id, message, max_chars=MAX_MSG_CHARS)
 
 
 def strip_emoji(title: str) -> str:
@@ -275,9 +237,9 @@ def main():
     log(session_id, "tabtitle", f"prompt={len(prompt)}chars")
 
     # Replace any previous emoji with 🌊 working indicator
-    debounce_path = get_debounce_path(session_id)
-    current_title = get_current_title(debounce_path)
-    current_timestamp = get_debounce_timestamp(debounce_path)
+    state = title_state.read(session_id)
+    current_title = strip_emoji(state.title)
+    current_timestamp = state.timestamp
     if current_title:
         log(session_id, "tabtitle", f"-> {EMOJI_WORKING} working ({current_title!r})")
         set_status_emoji(session_id, EMOJI_WORKING, current_title, current_timestamp, "tabtitle")
@@ -290,17 +252,14 @@ def main():
         sys.exit(0)
 
     # Gather conversation context
-    is_first_message = not os.path.exists(debounce_path)
+    is_first_message = not title_state.exists(session_id)
     origin_message = ""
     recent_messages = []
     if is_first_message:
         # Clean stale origin file (e.g., after /clear deletes debounce)
-        try:
-            os.remove(get_origin_path(session_id))
-        except OSError:
-            pass
+        title_state.delete_origin(session_id)
     else:
-        origin_message = get_origin_message(session_id)
+        origin_message = title_state.read_origin(session_id)
         transcript_path = get_transcript_path(data, session_id)
         recent_messages = get_recent_user_messages(transcript_path, prompt, count=1)
 
@@ -325,16 +284,19 @@ def main():
             log(session_id, "tabtitle", f"set_status_emoji failed for {slug!r}")
             sys.exit(0)
         play_sound("task.acknowledge", session_id)
-        write_origin_message(session_id, prompt)
+        title_state.write_origin(session_id, prompt, max_chars=MAX_MSG_CHARS)
     else:
         if current_title:
             # No rename — keep working emoji, preserve original timestamp (no cooldown reset)
             set_status_emoji(session_id, EMOJI_WORKING, current_title, current_timestamp, "tabtitle")
         else:
             # First message, no title yet — just write timestamp
-            write_debounce(debounce_path, now, "", session_id)
+            try:
+                title_state.write(session_id, now, "")
+            except OSError as e:
+                log(session_id, "tabtitle", f"debounce write failed: {e}")
         if is_first_message:
-            write_origin_message(session_id, prompt)
+            title_state.write_origin(session_id, prompt, max_chars=MAX_MSG_CHARS)
         log(session_id, "tabtitle", "no rename, cooldown not reset")
 
     sys.exit(0)

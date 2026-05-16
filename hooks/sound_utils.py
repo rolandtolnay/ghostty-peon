@@ -23,14 +23,6 @@ def _namespace() -> str:
     return runtime_config.namespace()
 
 
-def _tmp_path(name: str) -> str:
-    return runtime_config.tmp_path(name)
-
-
-def _env_path(name: str, default: str) -> str:
-    return runtime_config.env_path(name, default)
-
-
 LOG_FILE = runtime_config.log_file()
 SOUND_LAST_DIR = runtime_config.sound_last_dir()
 _LOG_DATE_FILE = runtime_config.log_date_file()
@@ -56,15 +48,11 @@ EMOJI_BLOCKED = "\U0001f525"  # 🔥 — permission prompt
 EMOJI_READY = "\U0001f33f"    # 🌿 — done, no input needed
 ALL_EMOJIS = (EMOJI_BLOCKED, EMOJI_QUESTION, EMOJI_WORKING, EMOJI_READY)
 
-DEBOUNCE_DIR = runtime_config.debounce_dir()
-PLAN_HANDOFF_DIR = runtime_config.plan_handoff_dir()
-
 UNIT_ASSIGN_DIR = runtime_config.unit_assign_dir()
 SESSION_INDEX_DIR = runtime_config.session_index_dir()
 STALE_HOURS = 12
 
 WEIGHT_STATE_DIR = runtime_config.weight_state_dir()
-_DEFAULT_WEIGHT_FILE = runtime_config.default_weight_file_name()
 WEIGHT_STATE_FILE = runtime_config.weight_state_file()
 
 
@@ -348,9 +336,6 @@ def _get_session_unit(session_id: str) -> tuple[str, str] | None:
     return None
 
 
-TERMINAL_ID_DIR = ghostty_tab.terminal_id_dir()
-
-
 def capture_terminal_id(session_id: str) -> str | None:
     """Capture the Ghostty terminal UUID for the currently focused tab."""
     return ghostty_tab.capture_terminal_id(session_id)
@@ -374,10 +359,6 @@ def get_terminal_id(session_id: str) -> str | None:
 def release_terminal_id(session_id: str) -> None:
     """Delete the persisted terminal ID for a session. Silent on failure."""
     ghostty_tab.release_terminal_id(session_id)
-
-
-def _plan_handoff_path(term_id: str) -> str:
-    return title_handoff.handoff_path(term_id)
 
 
 def write_plan_handoff(term_id: str, title: str) -> bool:

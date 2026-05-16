@@ -1,6 +1,6 @@
 // Managed by ghostty-peon install.js. Source: pi-extension/index.ts
 import type { ExtensionAPI, ToolCallEvent, ToolResultEvent } from "@earendil-works/pi-coding-agent";
-import { isInteractiveGhostty, isInteractiveGhosttyEnvOnly } from "./ghostty-env.js";
+import { isInteractiveGhostty, isInteractiveGhosttyTerminal } from "./ghostty-env.js";
 import {
 	FAST_HOOK_TIMEOUT_MS,
 	HOOK_TIMEOUT_MS,
@@ -27,7 +27,7 @@ const pendingTabtitleBySession = new Map<string, Promise<HookResult>>();
 
 function handlePermissionEvent(data: unknown) {
 	const event = data as PermissionEvent;
-	if (!event || !event.sessionId || !event.cwd || !isInteractiveGhosttyEnvOnly()) return;
+	if (!event || !event.sessionId || !event.cwd || !isInteractiveGhosttyTerminal()) return;
 
 	const hookEventName = permissionHookEventName(event.phase);
 	if (!hookEventName) return;
@@ -130,15 +130,16 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("tool_call", async (event: ToolCallEvent, ctx) => {
 		if (!isInteractiveGhostty(ctx) || !isQuestionToolName(event.toolName)) return undefined;
+		const id = sessionId(ctx);
 		await runHook(
 			"tab-attention-hook.py",
 			{
-				...basePayload(ctx),
+				...basePayload(ctx, id),
 				hook_event_name: "PreToolUse",
 				tool_name: event.toolName,
 			},
 			ctx.cwd,
-			sessionId(ctx),
+			id,
 			{ timeoutMs: FAST_HOOK_TIMEOUT_MS },
 		);
 		return undefined;
@@ -146,15 +147,16 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("tool_result", async (event: ToolResultEvent, ctx) => {
 		if (!isInteractiveGhostty(ctx)) return undefined;
+		const id = sessionId(ctx);
 		void runHook(
 			"tab-attention-hook.py",
 			{
-				...basePayload(ctx),
+				...basePayload(ctx, id),
 				hook_event_name: "PostToolUse",
 				tool_name: event.toolName,
 			},
 			ctx.cwd,
-			sessionId(ctx),
+			id,
 			{ timeoutMs: FAST_HOOK_TIMEOUT_MS },
 		);
 		return undefined;

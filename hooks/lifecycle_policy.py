@@ -10,7 +10,6 @@ from __future__ import annotations
 PLAN_PENDING = "planpending"
 PI_REPLACEMENT_SHUTDOWNS = frozenset({"fork", "resume", "new"})
 PI_OWNER_REPLACING_STARTS = frozenset({"new", "fork", "resume", "compact"})
-START_SOUND_SOURCES = frozenset({"startup", "new", "fork", "clear"})
 
 
 def is_pi(runtime: str) -> bool:
@@ -20,11 +19,6 @@ def is_pi(runtime: str) -> bool:
 def start_replaces_terminal_owner(runtime: str, source: str) -> bool:
     """Whether SessionStart may replace an existing terminal owner."""
     return is_pi(runtime) and source in PI_OWNER_REPLACING_STARTS
-
-
-def start_plays_sound(source: str) -> bool:
-    """Whether a start/clear source plays the session.start sound."""
-    return source in START_SOUND_SOURCES
 
 
 def is_plan_pending(lines: list[str]) -> bool:
