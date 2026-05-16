@@ -261,7 +261,15 @@ def is_valid_slug(slug: str) -> bool:
         return False
     if " " in slug:
         return False
-    if "error" in slug or "max turns" in slug or "truncat" in slug:
+    # Reject common failure text from model/tool wrappers, but allow legitimate
+    # topic slugs like "debug-update-tool-error".
+    if slug in {"error", "max-turns", "max-turns-reached", "truncated"}:
+        return False
+    is_error_prefix = slug.startswith("error-")
+    is_simple_error_suffix = slug.endswith("-error") and slug.count("-") == 1
+    if is_error_prefix or is_simple_error_suffix:
+        return False
+    if "max-turns" in slug or "truncat" in slug:
         return False
     if not any(c.isalpha() for c in slug):
         return False
