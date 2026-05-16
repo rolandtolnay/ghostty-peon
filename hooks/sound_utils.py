@@ -11,10 +11,10 @@ import os
 import random
 import subprocess
 import tempfile
-import time
 
 import ghostty_tab
 import runtime_config
+import title_handoff
 import title_state
 
 
@@ -377,42 +377,17 @@ def release_terminal_id(session_id: str) -> None:
 
 
 def _plan_handoff_path(term_id: str) -> str:
-    key = hashlib.sha256(term_id.encode("utf-8")).hexdigest()[:24]
-    return os.path.join(PLAN_HANDOFF_DIR, key)
+    return title_handoff.handoff_path(term_id)
 
 
 def write_plan_handoff(term_id: str, title: str) -> bool:
     """Persist a short-lived title handoff for Claude plan-mode session rollover."""
-    try:
-        os.makedirs(PLAN_HANDOFF_DIR, exist_ok=True)
-        with open(_plan_handoff_path(term_id), "w") as f:
-            json.dump({"timestamp": time.time(), "title": title}, f)
-        return True
-    except OSError:
-        return False
+    return title_handoff.write(term_id, title)
 
 
 def consume_plan_handoff(term_id: str, ttl_seconds: int = 120) -> str | None:
     """Read and delete a fresh plan handoff for a terminal, if one exists."""
-    path = _plan_handoff_path(term_id)
-    try:
-        with open(path) as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return None
-    finally:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-
-    title = data.get("title") if isinstance(data, dict) else None
-    timestamp = data.get("timestamp") if isinstance(data, dict) else None
-    if not isinstance(title, str) or not title.strip():
-        return None
-    if not isinstance(timestamp, (int, float)) or time.time() - float(timestamp) > ttl_seconds:
-        return None
-    return title.strip()
+    return title_handoff.consume(term_id, ttl_seconds=ttl_seconds)
 
 
 def set_tab_title(title: str, session_id: str | None = None) -> bool:
