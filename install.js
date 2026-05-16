@@ -33,7 +33,8 @@ const PI_AGENT_DIR = process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), 
 const PI_EXTENSION_DIR = path.join(PI_AGENT_DIR, "extensions", TOOLKIT_NAME);
 const PI_EXTENSION_INDEX = path.join(PI_EXTENSION_DIR, "index.ts");
 const PI_REPO_LINK = path.join(PI_EXTENSION_DIR, "repo");
-const PI_EXTENSION_SOURCE = path.join(REPO_ROOT, "pi-extension", "index.ts");
+const PI_EXTENSION_SOURCE_DIR = path.join(REPO_ROOT, "pi-extension");
+const PI_EXTENSION_SOURCE = path.join(PI_EXTENSION_SOURCE_DIR, "index.ts");
 const PI_EXTENSION_MARKER = "Managed by ghostty-peon install.js";
 
 const OLD_HOOKS_PATH = path.join(os.homedir(), ".claude", "hooks", "ghostty");
@@ -457,23 +458,53 @@ function uninstallClaude(manifest) {
 
 // ── Pi install/uninstall ────────────────────────────────────────────────────
 
+function piExtensionSourceFiles() {
+  if (!fs.existsSync(PI_EXTENSION_SOURCE_DIR)) {
+    throw new Error(`Missing Pi extension source directory: ${PI_EXTENSION_SOURCE_DIR}`);
+  }
+  return fs.readdirSync(PI_EXTENSION_SOURCE_DIR)
+    .filter((name) => name.endsWith(".ts"))
+    .sort();
+}
+
+function managedPiExtensionSource(name) {
+  let source = fs.readFileSync(path.join(PI_EXTENSION_SOURCE_DIR, name), "utf8");
+  if (!source.includes(PI_EXTENSION_MARKER)) {
+    source = `// ${PI_EXTENSION_MARKER}. Source: pi-extension/${name}\n${source}`;
+  }
+  return source;
+}
+
 function copyPiExtension(force) {
-  if (!fs.existsSync(PI_EXTENSION_SOURCE)) {
+  const sourceFiles = piExtensionSourceFiles();
+  if (!sourceFiles.includes("index.ts")) {
     throw new Error(`Missing Pi extension source: ${PI_EXTENSION_SOURCE}`);
   }
 
   ensureDir(PI_EXTENSION_DIR);
 
-  if (fs.existsSync(PI_EXTENSION_INDEX) && !hasManagedMarker(PI_EXTENSION_INDEX) && !force) {
-    throw new Error(`Refusing to overwrite non-managed Pi extension: ${PI_EXTENSION_INDEX}. Re-run with --force to overwrite.`);
+  for (const name of sourceFiles) {
+    const dest = path.join(PI_EXTENSION_DIR, name);
+    if (fs.existsSync(dest) && !hasManagedMarker(dest) && !force) {
+      throw new Error(`Refusing to overwrite non-managed Pi extension file: ${dest}. Re-run with --force to overwrite.`);
+    }
   }
 
-  let source = fs.readFileSync(PI_EXTENSION_SOURCE, "utf8");
-  if (!source.includes(PI_EXTENSION_MARKER)) {
-    source = `// ${PI_EXTENSION_MARKER}. Source: pi-extension/index.ts\n${source}`;
+  for (const name of sourceFiles) {
+    const dest = path.join(PI_EXTENSION_DIR, name);
+    fs.writeFileSync(dest, managedPiExtensionSource(name));
+    console.log(`  [ok]   Wrote ${dest}`);
   }
-  fs.writeFileSync(PI_EXTENSION_INDEX, source);
-  console.log(`  [ok]   Wrote ${PI_EXTENSION_INDEX}`);
+
+  const sourceSet = new Set(sourceFiles);
+  for (const name of fs.readdirSync(PI_EXTENSION_DIR)) {
+    if (!name.endsWith(".ts") || sourceSet.has(name)) continue;
+    const dest = path.join(PI_EXTENSION_DIR, name);
+    if (fs.statSync(dest).isFile() && hasManagedMarker(dest)) {
+      fs.unlinkSync(dest);
+      console.log(`  [ok]   Removed stale Pi extension file ${dest}`);
+    }
+  }
 }
 
 function updateRepoSymlink(force) {
@@ -538,6 +569,18 @@ function removeIfManagedFile(file, label) {
   console.log(`  [ok]   Removed ${label}`);
 }
 
+function removeManagedPiExtensionModules(extensionDir, indexPath) {
+  if (!fs.existsSync(extensionDir)) return;
+  for (const name of fs.readdirSync(extensionDir)) {
+    if (!name.endsWith(".ts")) continue;
+    const file = path.join(extensionDir, name);
+    if (file === indexPath) continue;
+    if (!fs.statSync(file).isFile() || !hasManagedMarker(file)) continue;
+    fs.unlinkSync(file);
+    console.log(`  [ok]   Removed Pi extension module ${name}`);
+  }
+}
+
 function removeRepoSymlink(manifest) {
   const repoLink = manifest?.targets?.pi?.repoLink || PI_REPO_LINK;
   let stat;
@@ -579,6 +622,7 @@ function uninstallPi(manifest) {
   const extensionDir = manifest?.targets?.pi?.extensionDir || PI_EXTENSION_DIR;
 
   removeRepoSymlink(manifest);
+  removeManagedPiExtensionModules(extensionDir, indexPath);
   removeIfManagedFile(indexPath, "Pi extension index.ts");
 
   if (fs.existsSync(extensionDir)) {

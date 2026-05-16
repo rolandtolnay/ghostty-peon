@@ -1,310 +1,29 @@
 // Managed by ghostty-peon install.js. Source: pi-extension/index.ts
-import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join, parse } from "node:path";
-import { fileURLToPath } from "node:url";
-import type {
-	AgentEndEvent,
-	ExtensionAPI,
-	ExtensionContext,
-	ToolCallEvent,
-	ToolResultEvent,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ToolCallEvent, ToolResultEvent } from "@earendil-works/pi-coding-agent";
+import { isInteractiveGhostty, isInteractiveGhosttyEnvOnly } from "./ghostty-env.js";
+import {
+	FAST_HOOK_TIMEOUT_MS,
+	HOOK_TIMEOUT_MS,
+	SESSION_HOOK_TIMEOUT_MS,
+	TABTITLE_BARRIER_MS,
+	runHook,
+	runnerLog,
+	waitBriefly,
+	type HookResult,
+} from "./hook-runner.js";
+import {
+	basePayload,
+	compactTokenCount,
+	extractAssistantText,
+	isQuestionToolName,
+	mapSessionStartReason,
+	permissionHookEventName,
+	sessionId,
+	type PermissionEvent,
+} from "./event-mapping.js";
 
-const EXT_DIR = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolveRepoRoot();
-const HOOKS_DIR = join(REPO_ROOT, "hooks");
-const PI_LOG_FILE = "/tmp/pi-tab-hooks.log";
 const PERMISSION_CHANNEL = "ghostty-peon:permission";
-
-const HOOK_TIMEOUT_MS = 15_000;
-const FAST_HOOK_TIMEOUT_MS = 5_000;
-const SESSION_HOOK_TIMEOUT_MS = 8_000;
-const TABTITLE_BARRIER_MS = 2_500;
-const HOOK_KILL_GRACE_MS = 2_000;
-
-const REQUIRED_HOOKS = [
-	"session-sound-hook.py",
-	"session-end-hook.py",
-	"tabtitle-hook.py",
-	"tab-attention-hook.py",
-	"tab-stop-question-hook.py",
-] as const;
-
-type HookScript = (typeof REQUIRED_HOOKS)[number];
-type HookResult = "ok" | "disabled" | "error" | "timeout";
-
-type PermissionEvent = {
-	phase?: "start" | "end";
-	sessionId?: string;
-	cwd?: string;
-	toolName?: string;
-};
-
-type RunOptions = {
-	timeoutMs?: number;
-	logStart?: boolean;
-};
-
 const pendingTabtitleBySession = new Map<string, Promise<HookResult>>();
-let missingRepoLogged = false;
-
-function resolveRepoRoot() {
-	const installedRepo = join(EXT_DIR, "repo");
-	if (existsSync(join(installedRepo, "hooks"))) return installedRepo;
-
-	// Development fallback for running this file directly from the repository.
-	const repoParent = dirname(EXT_DIR);
-	if (existsSync(join(repoParent, "hooks"))) return repoParent;
-
-	return installedRepo;
-}
-
-function runnerLog(sessionId: string | undefined, message: string) {
-	try {
-		const now = new Date();
-		const time = now.toTimeString().slice(0, 8) + `.${now.getMilliseconds().toString().padStart(3, "0")}`;
-		const sid = (sessionId || "").slice(-6) || "??????";
-		appendFileSync(PI_LOG_FILE, `${time} [${sid}] runner     | ${message}\n`);
-	} catch {
-		// Logging must never break pi startup or tool execution.
-	}
-}
-
-function logMissingHookOnce(sessionId: string | undefined, message: string) {
-	if (missingRepoLogged) return;
-	runnerLog(sessionId, message);
-	missingRepoLogged = true;
-}
-
-function hooksAvailable(sessionId?: string) {
-	if (!existsSync(HOOKS_DIR)) {
-		logMissingHookOnce(sessionId, `disabled: missing hooks dir ${HOOKS_DIR}`);
-		return false;
-	}
-	for (const hook of REQUIRED_HOOKS) {
-		const hookPath = join(HOOKS_DIR, hook);
-		if (!existsSync(hookPath)) {
-			logMissingHookOnce(sessionId, `disabled: missing hook ${hookPath}`);
-			return false;
-		}
-	}
-	return true;
-}
-
-function isGhosttyEnv() {
-	return (
-		process.env.TERM_PROGRAM?.toLowerCase() === "ghostty" ||
-		Boolean(process.env.GHOSTTY_RESOURCES_DIR || process.env.GHOSTTY_BIN_DIR)
-	);
-}
-
-function isSubagentChild() {
-	return process.env.PI_SUBAGENT_CHILD === "1";
-}
-
-function isInteractiveGhosttyTerminal() {
-	return !isSubagentChild() && isGhosttyEnv() && Boolean(process.stdin.isTTY && process.stdout.isTTY);
-}
-
-function isInteractiveGhostty(ctx: ExtensionContext) {
-	return ctx.hasUI && isInteractiveGhosttyTerminal();
-}
-
-function isInteractiveGhosttyEnvOnly() {
-	return isInteractiveGhosttyTerminal();
-}
-
-function findUp(startDir: string, relativePath: string) {
-	let dir = startDir || process.cwd();
-	while (true) {
-		const candidate = join(dir, relativePath);
-		if (existsSync(candidate)) return candidate;
-		const parent = dirname(dir);
-		if (parent === dir || dir === parse(dir).root) return undefined;
-		dir = parent;
-	}
-}
-
-function readPeonSoundClass(settingsPath: string) {
-	try {
-		const data = JSON.parse(readFileSync(settingsPath, "utf8")) as {
-			env?: { PEON_SOUND_CLASS?: unknown };
-		};
-		const value = data.env?.PEON_SOUND_CLASS;
-		return typeof value === "string" && value.trim() ? value.trim() : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-function getPeonSoundClass(cwd: string) {
-	const piSettings = findUp(cwd, join(".pi", "settings.local.json"));
-	if (piSettings) return readPeonSoundClass(piSettings);
-
-	const claudeSettings = findUp(cwd, join(".claude", "settings.local.json"));
-	return claudeSettings ? readPeonSoundClass(claudeSettings) : undefined;
-}
-
-function buildHookEnv(cwd: string) {
-	const env: NodeJS.ProcessEnv = {
-		...process.env,
-		GHOSTTY_PEON_NAMESPACE: "pi",
-		GHOSTTY_PEON_LOG_FILE: PI_LOG_FILE,
-		GHOSTTY_PEON_LOG_PREV_FILE: "/tmp/pi-tab-hooks.prev.log",
-		GHOSTTY_PEON_LOG_DATE_FILE: "/tmp/pi-tab-hooks.lastdate",
-		GHOSTTY_PEON_DEBOUNCE_DIR: "/tmp/pi-tabtitle",
-		GHOSTTY_PEON_TERMINAL_ID_DIR: "/tmp/pi-tabterminal",
-		GHOSTTY_PEON_UNIT_ASSIGN_DIR: "/tmp/pi-sound-units",
-		GHOSTTY_PEON_SESSION_INDEX_DIR: "/tmp/pi-sound-session",
-		GHOSTTY_PEON_SOUND_LAST_DIR: "/tmp/pi-sound-last",
-		GHOSTTY_PEON_WEIGHT_STATE_FILE: join(homedir(), ".ghostty-peon", "pi-weights.json"),
-	};
-
-	const soundClass = getPeonSoundClass(cwd);
-	if (soundClass) env.PEON_SOUND_CLASS = soundClass;
-	return env;
-}
-
-function runHook(
-	script: HookScript,
-	payload: Record<string, unknown>,
-	cwd: string,
-	sessionId: string,
-	options: RunOptions = {},
-): Promise<HookResult> {
-	if (!hooksAvailable(sessionId)) return Promise.resolve("disabled");
-
-	const hookPath = join(HOOKS_DIR, script);
-	const timeoutMs = options.timeoutMs ?? HOOK_TIMEOUT_MS;
-	if (options.logStart !== false) runnerLog(sessionId, `start ${script}`);
-
-	return new Promise((resolve) => {
-		let settled = false;
-		let childClosed = false;
-		let killTimer: ReturnType<typeof setTimeout> | undefined;
-		let stderr = "";
-
-		const finish = (result: HookResult, message?: string) => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			if (message) runnerLog(sessionId, message);
-			resolve(result);
-		};
-
-		const child = spawn("python3", [hookPath], {
-			cwd: REPO_ROOT,
-			env: buildHookEnv(cwd),
-			stdio: ["pipe", "ignore", "pipe"],
-		});
-
-		const timer = setTimeout(() => {
-			child.kill("SIGTERM");
-			killTimer = setTimeout(() => {
-				if (!childClosed) child.kill("SIGKILL");
-			}, HOOK_KILL_GRACE_MS);
-			finish("timeout", `timeout ${script} after ${timeoutMs}ms`);
-		}, timeoutMs);
-
-		child.stderr?.on("data", (chunk) => {
-			stderr += chunk.toString();
-			if (stderr.length > 4000) stderr = stderr.slice(-4000);
-		});
-
-		child.on("error", (error) => {
-			finish("error", `error ${script}: ${error.message}`);
-		});
-
-		child.on("close", (code, signal) => {
-			childClosed = true;
-			if (killTimer) clearTimeout(killTimer);
-			if (settled) return;
-			if (code === 0) {
-				finish("ok");
-				return;
-			}
-			const suffix = stderr.trim() ? ` stderr=${JSON.stringify(stderr.trim().slice(-1000))}` : "";
-			finish("error", `exit ${script}: code=${code ?? "null"} signal=${signal ?? "null"}${suffix}`);
-		});
-
-		try {
-			child.stdin?.end(JSON.stringify(payload));
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			finish("error", `stdin ${script}: ${message}`);
-		}
-	});
-}
-
-function sessionId(ctx: ExtensionContext) {
-	return ctx.sessionManager.getSessionId() || "unknown";
-}
-
-function basePayload(ctx: ExtensionContext, id = sessionId(ctx)) {
-	return {
-		session_id: id,
-		cwd: ctx.cwd,
-		session_file: ctx.sessionManager.getSessionFile() || "",
-	};
-}
-
-async function waitBriefly<T>(promise: Promise<T>, timeoutMs: number) {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	try {
-		return await Promise.race([
-			promise.catch(() => undefined),
-			new Promise<undefined>((resolve) => {
-				timer = setTimeout(() => resolve(undefined), timeoutMs);
-			}),
-		]);
-	} finally {
-		if (timer) clearTimeout(timer);
-	}
-}
-
-function extractAssistantText(event: AgentEndEvent) {
-	for (let i = event.messages.length - 1; i >= 0; i--) {
-		const message = event.messages[i] as { role?: string; content?: unknown };
-		if (message.role !== "assistant") continue;
-		return contentToText(message.content).trim();
-	}
-	return "";
-}
-
-function contentToText(content: unknown): string {
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	const parts: string[] = [];
-	for (const block of content) {
-		if (!block || typeof block !== "object") continue;
-		const record = block as Record<string, unknown>;
-		if (record.type === "text" && typeof record.text === "string") parts.push(record.text);
-	}
-	return parts.join("\n");
-}
-
-function mapSessionStartReason(reason: string) {
-	if (reason === "reload") return undefined;
-	if (reason === "resume" || reason === "new" || reason === "fork") return reason;
-	return "startup";
-}
-
-function isQuestionToolName(toolName: string) {
-	return toolName === "AskUserQuestion" || toolName === "question";
-}
-
-function permissionHookEventName(phase: PermissionEvent["phase"]) {
-	switch (phase) {
-		case "start":
-			return "PermissionRequest";
-		case "end":
-			return "PostToolUse";
-		default:
-			return undefined;
-	}
-}
 
 function handlePermissionEvent(data: unknown) {
 	const event = data as PermissionEvent;
@@ -325,11 +44,6 @@ function handlePermissionEvent(data: unknown) {
 		event.sessionId,
 		{ timeoutMs: FAST_HOOK_TIMEOUT_MS },
 	);
-}
-
-function compactTokenCount(event: unknown) {
-	const preparation = (event as { preparation?: { tokensBefore?: unknown } }).preparation;
-	return typeof preparation?.tokensBefore === "number" ? preparation.tokensBefore : undefined;
 }
 
 export default function (pi: ExtensionAPI) {
