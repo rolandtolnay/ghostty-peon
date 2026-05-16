@@ -7,38 +7,48 @@ Architecture details, log format, and troubleshooting for ghostty-peon hooks.
 ## Architecture Overview
 
 ```
-settings.json hooks config
+Claude settings.json hooks or Pi extension events
     │
-    ├─ PreToolUse
+    ├─ PreToolUse / Pi tool_call:question
     │    └─ AskUserQuestion/question ─► tab-attention-hook.py ──► add ⭐ + input.required sound
     │
-    ├─ UserPromptSubmit ──────► tabtitle-hook.py ──► Ollama slug ──► set title + task.acknowledge sound
+    ├─ UserPromptSubmit / Pi before_agent_start ─► tabtitle-hook.py ──► Ollama slug ──► set title + task.acknowledge sound
     │
-    ├─ PermissionRequest ────► tab-attention-hook.py ──► add 🔥 + input.required sound (skips question tools)
+    ├─ PermissionRequest / ghostty-peon:permission ─► tab-attention-hook.py ──► add 🔥 + input.required sound
     │
-    ├─ PostToolUse
-    │    └─ AskUserQuestion/question ─► tab-attention-hook.py ──► clear emoji → restore 🌀
+    ├─ PostToolUse / Pi tool_result ─► tab-attention-hook.py ──► clear emoji → restore 🌀
     │
-    ├─ Stop ──────────────────► tab-stop-question-hook.py ──► Ollama question check ──► add ⭐ or 🌿
+    ├─ Stop / Pi agent_end ──────────► tab-stop-question-hook.py ──► Ollama question check ──► add ⭐ or 🌿
     │
-    ├─ SessionStart
-    │    ├─ startup ──────────► session-sound-hook.py ──► assign_unit() + session.start sound
-    │    ├─ clear ────────────► session-sound-hook.py ──► delete debounce + re-assign unit
-    │    └─ resume ───────────► session-sound-hook.py ──► assign_unit() if no existing assignment
+    ├─ SessionStart / Pi session_start
+    │    ├─ startup/new/fork ────────► session-sound-hook.py ──► capture/claim terminal + assign unit + session.start sound
+    │    ├─ resume ─────────────────► session-sound-hook.py ──► capture/claim terminal + restore title + assign unit if needed
+    │    ├─ compact ────────────────► session-sound-hook.py ──► re-capture terminal + restore title
+    │    └─ clear ──────────────────► session-sound-hook.py ──► delete debounce + re-assign unit
     │
-    └─ SessionEnd ────────────► session-end-hook.py ──► release_unit() + reset title
+    └─ SessionEnd / Pi session_shutdown ─► session-end-hook.py ──► reset/preserve/handoff title state + release unit/terminal
 ```
 
 ## File Map
 
 | File | Purpose |
 |------|---------|
-| `hooks/sound_utils.py` | Shared module: `set_tab_title()`, `capture_terminal_id()`, `play_sound()`, `assign_unit()`, `release_unit()`, `log()` |
+| `hooks/sound_utils.py` | Compatibility facade plus shared sound playback, unit assignment, emoji helpers, and logging |
+| `hooks/runtime_config.py` | Runtime namespace/env/path configuration for Claude and Pi |
+| `hooks/title_state.py` | Debounce/title/origin state file parsing and writing |
+| `hooks/title_handoff.py` | Terminal-scoped title handoff JSON for plan/fork replacement flows |
+| `hooks/ghostty_tab.py` | Ghostty terminal capture, ownership, safe title targeting, stale terminal cleanup, focus checks |
+| `hooks/lifecycle_policy.py` | Pure lifecycle decisions for Pi/Claude replacement, reset, and cleanup behavior |
 | `hooks/tabtitle-hook.py` | UserPromptSubmit: sets 🌀 working emoji, generates slug via Ollama, plays task.acknowledge |
 | `hooks/tab-attention-hook.py` | PreToolUse/PermissionRequest: sets attention emoji; PostToolUse clears it |
 | `hooks/tab-stop-question-hook.py` | Stop: heuristic question detection via Ollama, sets ⭐ or 🌿 |
-| `hooks/session-sound-hook.py` | SessionStart: assigns unit + plays session.start on startup; re-assigns on clear |
-| `hooks/session-end-hook.py` | SessionEnd: releases unit assignment, resets tab title to folder name |
+| `hooks/session-sound-hook.py` | SessionStart: captures/claims terminal, restores handoff/title state, assigns unit, plays session.start where applicable |
+| `hooks/session-end-hook.py` | SessionEnd: reset/preserve title state, writes handoff for plan/fork, releases unit + terminal id |
+| `pi-extension/index.ts` | Pi extension entrypoint and event wiring |
+| `pi-extension/event-mapping.ts` | Pi-to-Claude-like payload mapping helpers |
+| `pi-extension/ghostty-env.ts` | Pi Ghostty detection and hook subprocess environment construction |
+| `pi-extension/hook-runner.ts` | Python hook subprocess runner, timeout handling, runner logging |
+| `pi-extension/paths.ts` | Pi extension path resolution and required hook list |
 | `client.py` | Standalone Ollama HTTP client (pure stdlib, no pip deps) |
 
 ---
@@ -143,7 +153,7 @@ Look for `tabtitle` lines. The log will show exactly why:
 - `skip: cooldown (Xs elapsed, 90s required)` — still within the cooldown window (cooldown only resets on actual renames, not on same-slug or KEEP results)
 - `llm returned None` — Ollama timed out (10s timeout) or returned an invalid slug
 - `llm error: ...` — Ollama not running or model not available
-- `set_tab_title failed` — Ghostty AppleScript failed (window not focused, Ghostty not running)
+- `set_tab_title failed` — Ghostty AppleScript failed (stale/missing terminal, Ghostty not running, or AppleScript error)
 - `target: SKIPPED (no term_id, refusing unsafe fallback)` — terminal UUID was lost
 
 **Attention emoji not appearing:**
@@ -280,7 +290,7 @@ Hooks that fire inside nested `claude` subprocesses would cause recursive execut
 Sounds are tightly coupled to state changes:
 - `task.acknowledge`: Only when a new slug is generated (not on KEEP)
 - `input.required`: Only when the emoji state actually changes (existing emoji = skip)
-- `session.start`: Only on startup/clear (not on resume with existing assignment)
+- `session.start`: On Claude startup/clear and Pi startup/new/fork when a unit is assigned (not on resume with existing assignment or compact)
 
 **Question-tool deduplication**: `AskUserQuestion` (Claude Code) / `question` (Pi) can fire both `PreToolUse` and `PermissionRequest`. The `PermissionRequest` handler checks `tool_name` and skips question tools, so only `PreToolUse` handles them (with ⭐, not 🔥).
 
@@ -295,7 +305,7 @@ Sounds are tightly coupled to state changes:
 6. Fire `afplay` via `subprocess.Popen()` — non-blocking, fire-and-forget
 7. All failures silently caught
 
-### settings.json Hook Registration
+### Claude `settings.json` Hook Registration
 
 | Hook Script | Event | Matcher | Timeout | Async |
 |-------------|-------|---------|---------|-------|
@@ -319,15 +329,16 @@ All hooks except `session-end-hook.py` run async to avoid blocking the Claude Co
 node install.js --target pi --yes
 ```
 
-The installer writes a small TypeScript extension to:
+The installer writes a small managed TypeScript shim and symlinks the changing source directories:
 
 ```text
 ~/.pi/agent/extensions/ghostty-peon/
-  index.ts
+  index.ts   # managed shim: exports default from ./src/index.js
+  src -> /path/to/ghostty-peon/pi-extension
   repo -> /path/to/ghostty-peon
 ```
 
-After installing or uninstalling the Pi target, run `/reload` in Pi or restart Pi.
+`src` means changes under `pi-extension/` are picked up after `/reload` without reinstalling. `repo` means Python hook changes under `hooks/` are picked up by the next hook invocation. Reinstall is only needed when the managed shim/install layout changes. After installing or uninstalling the Pi target, run `/reload` in Pi or restart Pi.
 
 ### Pi Event Mapping
 
@@ -416,12 +427,14 @@ Without this optional integration, Pi still supports session sounds, tab titles,
 
 ```sh
 ls -l ~/.pi/agent/extensions/ghostty-peon
+readlink ~/.pi/agent/extensions/ghostty-peon/src
 readlink ~/.pi/agent/extensions/ghostty-peon/repo
 ```
 
 Expected:
 
-- `index.ts` exists and contains `Managed by ghostty-peon install.js`.
+- `index.ts` exists, contains `Managed by ghostty-peon install.js`, and exports from `./src/index.js`.
+- `src` points to this repository's `pi-extension/` directory.
 - `repo` points to this repository checkout.
 - `/tmp/pi-tab-hooks.log` receives `runner` and hook log lines after Pi events.
 

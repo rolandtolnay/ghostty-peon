@@ -33,6 +33,7 @@ const PI_AGENT_DIR = process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), 
 const PI_EXTENSION_DIR = path.join(PI_AGENT_DIR, "extensions", TOOLKIT_NAME);
 const PI_EXTENSION_INDEX = path.join(PI_EXTENSION_DIR, "index.ts");
 const PI_REPO_LINK = path.join(PI_EXTENSION_DIR, "repo");
+const PI_EXTENSION_SRC_LINK = path.join(PI_EXTENSION_DIR, "src");
 const PI_EXTENSION_SOURCE_DIR = path.join(REPO_ROOT, "pi-extension");
 const PI_EXTENSION_SOURCE = path.join(PI_EXTENSION_SOURCE_DIR, "index.ts");
 const PI_EXTENSION_MARKER = "Managed by ghostty-peon install.js";
@@ -467,12 +468,20 @@ function piExtensionSourceFiles() {
     .sort();
 }
 
-function managedPiExtensionSource(name) {
-  let source = fs.readFileSync(path.join(PI_EXTENSION_SOURCE_DIR, name), "utf8");
-  if (!source.includes(PI_EXTENSION_MARKER)) {
-    source = `// ${PI_EXTENSION_MARKER}. Source: pi-extension/${name}\n${source}`;
+function piExtensionShimSource() {
+  return `// ${PI_EXTENSION_MARKER}. Source: pi-extension/index.ts via src symlink\nexport { default } from "./src/index.js";\n`;
+}
+
+function removeManagedPiExtensionModules(extensionDir, indexPath) {
+  if (!fs.existsSync(extensionDir)) return;
+  for (const name of fs.readdirSync(extensionDir)) {
+    if (!name.endsWith(".ts")) continue;
+    const file = path.join(extensionDir, name);
+    if (file === indexPath) continue;
+    if (!fs.statSync(file).isFile() || !hasManagedMarker(file)) continue;
+    fs.unlinkSync(file);
+    console.log(`  [ok]   Removed stale Pi extension module ${name}`);
   }
-  return source;
 }
 
 function copyPiExtension(force) {
@@ -483,72 +492,67 @@ function copyPiExtension(force) {
 
   ensureDir(PI_EXTENSION_DIR);
 
-  for (const name of sourceFiles) {
-    const dest = path.join(PI_EXTENSION_DIR, name);
-    if (fs.existsSync(dest) && !hasManagedMarker(dest) && !force) {
-      throw new Error(`Refusing to overwrite non-managed Pi extension file: ${dest}. Re-run with --force to overwrite.`);
-    }
+  if (fs.existsSync(PI_EXTENSION_INDEX) && !hasManagedMarker(PI_EXTENSION_INDEX) && !force) {
+    throw new Error(`Refusing to overwrite non-managed Pi extension index: ${PI_EXTENSION_INDEX}. Re-run with --force to overwrite.`);
   }
 
-  for (const name of sourceFiles) {
-    const dest = path.join(PI_EXTENSION_DIR, name);
-    fs.writeFileSync(dest, managedPiExtensionSource(name));
-    console.log(`  [ok]   Wrote ${dest}`);
-  }
-
-  const sourceSet = new Set(sourceFiles);
-  for (const name of fs.readdirSync(PI_EXTENSION_DIR)) {
-    if (!name.endsWith(".ts") || sourceSet.has(name)) continue;
-    const dest = path.join(PI_EXTENSION_DIR, name);
-    if (fs.statSync(dest).isFile() && hasManagedMarker(dest)) {
-      fs.unlinkSync(dest);
-      console.log(`  [ok]   Removed stale Pi extension file ${dest}`);
-    }
-  }
+  fs.writeFileSync(PI_EXTENSION_INDEX, piExtensionShimSource());
+  console.log(`  [ok]   Wrote ${PI_EXTENSION_INDEX}`);
+  removeManagedPiExtensionModules(PI_EXTENSION_DIR, PI_EXTENSION_INDEX);
 }
 
-function updateRepoSymlink(force) {
+function updateSymlink(linkPath, targetPath, label, force) {
   let stat;
   try {
-    stat = fs.lstatSync(PI_REPO_LINK);
+    stat = fs.lstatSync(linkPath);
   } catch (error) {
     if (!error || error.code !== "ENOENT") throw error;
   }
 
   if (stat?.isSymbolicLink()) {
-    let current = fs.readlinkSync(PI_REPO_LINK);
+    let current = fs.readlinkSync(linkPath);
     try {
-      current = fs.realpathSync(PI_REPO_LINK);
+      current = fs.realpathSync(linkPath);
     } catch {
       // Dangling symlink; replace it below.
     }
-    if (current === REPO_ROOT) {
-      console.log(`  [skip] Repo symlink already points to ${REPO_ROOT}`);
+    if (current === targetPath) {
+      console.log(`  [skip] ${label} symlink already points to ${targetPath}`);
       return;
     }
-    fs.unlinkSync(PI_REPO_LINK);
-    console.log(`  [ok]   Updated repo symlink from ${current} to ${REPO_ROOT}`);
+    fs.unlinkSync(linkPath);
+    console.log(`  [ok]   Updated ${label} symlink from ${current} to ${targetPath}`);
   } else if (stat) {
     if (!force) {
-      throw new Error(`Refusing to replace non-symlink path: ${PI_REPO_LINK}. Re-run with --force to replace.`);
+      throw new Error(`Refusing to replace non-symlink path: ${linkPath}. Re-run with --force to replace.`);
     }
-    fs.rmSync(PI_REPO_LINK, { recursive: true, force: true });
-    console.log(`  [ok]   Removed non-symlink repo path due to --force`);
+    fs.rmSync(linkPath, { recursive: true, force: true });
+    console.log(`  [ok]   Removed non-symlink ${label} path due to --force`);
   }
 
-  fs.symlinkSync(REPO_ROOT, PI_REPO_LINK, "dir");
-  console.log(`  [ok]   Linked ${PI_REPO_LINK} -> ${REPO_ROOT}`);
+  fs.symlinkSync(targetPath, linkPath, "dir");
+  console.log(`  [ok]   Linked ${linkPath} -> ${targetPath}`);
+}
+
+function updateRepoSymlink(force) {
+  updateSymlink(PI_REPO_LINK, REPO_ROOT, "Repo", force);
+}
+
+function updatePiExtensionSourceSymlink(force) {
+  updateSymlink(PI_EXTENSION_SRC_LINK, PI_EXTENSION_SOURCE_DIR, "Pi extension source", force);
 }
 
 function installPi(force = false) {
   console.log(`\nInstalling ${TOOLKIT_NAME} for Pi from ${REPO_ROOT}\n`);
 
   copyPiExtension(force);
+  updatePiExtensionSourceSymlink(force);
   updateRepoSymlink(force);
 
   updateManifestTarget("pi", {
     extensionDir: PI_EXTENSION_DIR,
     indexPath: PI_EXTENSION_INDEX,
+    srcLink: PI_EXTENSION_SRC_LINK,
     repoLink: PI_REPO_LINK,
   });
 
@@ -569,16 +573,37 @@ function removeIfManagedFile(file, label) {
   console.log(`  [ok]   Removed ${label}`);
 }
 
-function removeManagedPiExtensionModules(extensionDir, indexPath) {
-  if (!fs.existsSync(extensionDir)) return;
-  for (const name of fs.readdirSync(extensionDir)) {
-    if (!name.endsWith(".ts")) continue;
-    const file = path.join(extensionDir, name);
-    if (file === indexPath) continue;
-    if (!fs.statSync(file).isFile() || !hasManagedMarker(file)) continue;
-    fs.unlinkSync(file);
-    console.log(`  [ok]   Removed Pi extension module ${name}`);
+function removePiExtensionSourceSymlink(manifest) {
+  const srcLink = manifest?.targets?.pi?.srcLink || PI_EXTENSION_SRC_LINK;
+  let stat;
+  try {
+    stat = fs.lstatSync(srcLink);
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      console.log(`  [skip] Pi extension source symlink not found`);
+      return;
+    }
+    throw error;
   }
+
+  if (!stat.isSymbolicLink()) {
+    console.log(`  [skip] Pi extension source path is not a symlink: ${srcLink}`);
+    return;
+  }
+
+  let current = fs.readlinkSync(srcLink);
+  try {
+    current = fs.realpathSync(srcLink);
+  } catch {
+    // Dangling symlink; allow removal if it is manifest-managed.
+  }
+  if (current !== PI_EXTENSION_SOURCE_DIR && !manifest?.targets?.pi?.srcLink) {
+    console.log(`  [skip] Pi extension source symlink points elsewhere: ${srcLink} -> ${current}`);
+    return;
+  }
+
+  fs.unlinkSync(srcLink);
+  console.log(`  [ok]   Removed Pi extension source symlink`);
 }
 
 function removeRepoSymlink(manifest) {
@@ -622,6 +647,7 @@ function uninstallPi(manifest) {
   const extensionDir = manifest?.targets?.pi?.extensionDir || PI_EXTENSION_DIR;
 
   removeRepoSymlink(manifest);
+  removePiExtensionSourceSymlink(manifest);
   removeManagedPiExtensionModules(extensionDir, indexPath);
   removeIfManagedFile(indexPath, "Pi extension index.ts");
 
