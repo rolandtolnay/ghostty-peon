@@ -14,28 +14,29 @@ import tempfile
 import time
 
 import ghostty_tab
+import runtime_config
 import title_state
+
 
 def _namespace() -> str:
     """Runtime namespace for tmp/state paths. Defaults preserve Claude behavior."""
-    value = os.environ.get("GHOSTTY_PEON_NAMESPACE", "claude").strip().lower()
-    return value or "claude"
+    return runtime_config.namespace()
 
 
 def _tmp_path(name: str) -> str:
-    return f"/tmp/{_namespace()}-{name}"
+    return runtime_config.tmp_path(name)
 
 
 def _env_path(name: str, default: str) -> str:
-    return os.environ.get(name, default)
+    return runtime_config.env_path(name, default)
 
 
-LOG_FILE = _env_path("GHOSTTY_PEON_LOG_FILE", _tmp_path("tab-hooks.log"))
-SOUND_LAST_DIR = _env_path("GHOSTTY_PEON_SOUND_LAST_DIR", _tmp_path("sound-last"))
-_LOG_DATE_FILE = _env_path("GHOSTTY_PEON_LOG_DATE_FILE", _tmp_path("tab-hooks.lastdate"))
-LOG_PREV_FILE = _env_path("GHOSTTY_PEON_LOG_PREV_FILE", _tmp_path("tab-hooks.prev.log"))
+LOG_FILE = runtime_config.log_file()
+SOUND_LAST_DIR = runtime_config.sound_last_dir()
+_LOG_DATE_FILE = runtime_config.log_date_file()
+LOG_PREV_FILE = runtime_config.log_prev_file()
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO_ROOT = runtime_config.repo_root()
 SOUNDS_DIR = os.path.join(REPO_ROOT, "sounds")
 VALID_CLASSES = ("orc", "human", "nightelf", "undead")
 PLAYBACK_VOLUME = "0.07"
@@ -55,18 +56,16 @@ EMOJI_BLOCKED = "\U0001f525"  # 🔥 — permission prompt
 EMOJI_READY = "\U0001f33f"    # 🌿 — done, no input needed
 ALL_EMOJIS = (EMOJI_BLOCKED, EMOJI_QUESTION, EMOJI_WORKING, EMOJI_READY)
 
-DEBOUNCE_DIR = _env_path("GHOSTTY_PEON_DEBOUNCE_DIR", _tmp_path("tabtitle"))
-PLAN_HANDOFF_DIR = _env_path("GHOSTTY_PEON_PLAN_HANDOFF_DIR", _tmp_path("plan-handoff"))
+DEBOUNCE_DIR = runtime_config.debounce_dir()
+PLAN_HANDOFF_DIR = runtime_config.plan_handoff_dir()
 
-UNIT_ASSIGN_DIR = _env_path("GHOSTTY_PEON_UNIT_ASSIGN_DIR", _tmp_path("sound-units"))
-SESSION_INDEX_DIR = _env_path("GHOSTTY_PEON_SESSION_INDEX_DIR", _tmp_path("sound-session"))
+UNIT_ASSIGN_DIR = runtime_config.unit_assign_dir()
+SESSION_INDEX_DIR = runtime_config.session_index_dir()
 STALE_HOURS = 12
 
-WEIGHT_STATE_DIR = os.path.expanduser(_env_path("GHOSTTY_PEON_WEIGHT_STATE_DIR", "~/.ghostty-peon"))
-_DEFAULT_WEIGHT_FILE = "weights.json" if _namespace() == "claude" else f"{_namespace()}-weights.json"
-WEIGHT_STATE_FILE = os.path.expanduser(
-    _env_path("GHOSTTY_PEON_WEIGHT_STATE_FILE", os.path.join(WEIGHT_STATE_DIR, _DEFAULT_WEIGHT_FILE))
-)
+WEIGHT_STATE_DIR = runtime_config.weight_state_dir()
+_DEFAULT_WEIGHT_FILE = runtime_config.default_weight_file_name()
+WEIGHT_STATE_FILE = runtime_config.weight_state_file()
 
 
 def _rotate_log_on_new_day() -> None:

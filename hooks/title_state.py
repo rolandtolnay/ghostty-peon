@@ -15,21 +15,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 
+import runtime_config
+
 
 PLAN_PENDING = "planpending"
 
 
-def _namespace() -> str:
-    value = os.environ.get("GHOSTTY_PEON_NAMESPACE", "claude").strip().lower()
-    return value or "claude"
-
-
-def _tmp_path(name: str) -> str:
-    return f"/tmp/{_namespace()}-{name}"
-
-
 def debounce_dir() -> str:
-    return os.environ.get("GHOSTTY_PEON_DEBOUNCE_DIR", _tmp_path("tabtitle"))
+    return runtime_config.debounce_dir()
 
 
 @dataclass(frozen=True)
