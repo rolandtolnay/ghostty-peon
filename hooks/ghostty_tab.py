@@ -11,21 +11,14 @@ from collections.abc import Callable
 import os
 import subprocess
 
+import runtime_config
+
 
 LogFn = Callable[[str, str, str], None]
 
 
-def _namespace() -> str:
-    value = os.environ.get("GHOSTTY_PEON_NAMESPACE", "claude").strip().lower()
-    return value or "claude"
-
-
-def _tmp_path(name: str) -> str:
-    return f"/tmp/{_namespace()}-{name}"
-
-
 def terminal_id_dir() -> str:
-    return os.environ.get("GHOSTTY_PEON_TERMINAL_ID_DIR", _tmp_path("tabterminal"))
+    return runtime_config.terminal_id_dir()
 
 
 def terminal_id_path(session_id: str) -> str:
@@ -108,6 +101,19 @@ def release_terminal_id(session_id: str) -> None:
         pass
 
 
+def _stderr_text(stderr: str | bytes | None) -> str:
+    if isinstance(stderr, str):
+        return stderr.strip()
+    return (stderr or b"").decode(errors="replace").strip()
+
+
+def _is_stale_terminal_error(stderr: str, term_id: str) -> bool:
+    """Return True for Ghostty object-not-found errors for our terminal id."""
+    if not term_id or term_id not in stderr or "terminal" not in stderr.lower():
+        return False
+    return "-1728" in stderr or "Can't get" in stderr or "Can’t get" in stderr
+
+
 def set_tab_title(title: str, session_id: str | None = None, log_fn: LogFn | None = None) -> bool:
     """Set a Ghostty tab title.
 
@@ -144,9 +150,14 @@ def set_tab_title(title: str, session_id: str | None = None, log_fn: LogFn | Non
             capture_output=True,
             timeout=5,
         )
-        if result.returncode != 0 and session_id and log_fn:
-            stderr = result.stderr.strip() if isinstance(result.stderr, str) else (result.stderr or b"").decode().strip()
-            log_fn(session_id, "tabtitle", f"osascript failed: rc={result.returncode} stderr={stderr!r}")
+        if result.returncode != 0 and session_id:
+            stderr = _stderr_text(result.stderr)
+            if log_fn:
+                log_fn(session_id, "tabtitle", f"osascript failed: rc={result.returncode} stderr={stderr!r}")
+            if term_id and _is_stale_terminal_error(stderr, term_id):
+                release_terminal_id(session_id)
+                if log_fn:
+                    log_fn(session_id, "tabtitle", f"stale terminal id released: {term_id!r}")
         return result.returncode == 0
     except (subprocess.SubprocessError, OSError) as e:
         if session_id and log_fn:

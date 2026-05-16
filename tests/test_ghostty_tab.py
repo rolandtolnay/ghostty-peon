@@ -49,6 +49,31 @@ class GhosttyTabTests(unittest.TestCase):
                 self.assertIn('first terminal whose id is "term-42"', args[2])
                 self.assertIn('set_tab_title:fix-tabs', args[2])
 
+    def test_set_tab_title_releases_stale_terminal_id_on_ghostty_not_found(self):
+        with hook_test_env() as (_root, env, dirs):
+            logs = []
+            with patch.dict(os.environ, env, clear=True), patch("ghostty_tab.subprocess.run") as run:
+                (dirs["terminal"] / "session-1").write_text("term-42")
+                run.return_value = SimpleNamespace(
+                    returncode=1,
+                    stderr='25:159: execution error: Ghostty got an error: Can’t get terminal 1 whose id = "term-42". (-1728)',
+                )
+
+                self.assertFalse(ghostty_tab.set_tab_title("fix-tabs", "session-1", log_fn=lambda *args: logs.append(args)))
+
+                self.assertFalse((dirs["terminal"] / "session-1").exists())
+                self.assertIn(("session-1", "tabtitle", "stale terminal id released: 'term-42'"), logs)
+
+    def test_set_tab_title_keeps_terminal_id_on_generic_osascript_failure(self):
+        with hook_test_env() as (_root, env, dirs):
+            with patch.dict(os.environ, env, clear=True), patch("ghostty_tab.subprocess.run") as run:
+                (dirs["terminal"] / "session-1").write_text("term-42")
+                run.return_value = SimpleNamespace(returncode=1, stderr="permission denied")
+
+                self.assertFalse(ghostty_tab.set_tab_title("fix-tabs", "session-1"))
+
+                self.assertEqual((dirs["terminal"] / "session-1").read_text(), "term-42")
+
 
 if __name__ == "__main__":
     unittest.main()
