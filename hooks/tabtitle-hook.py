@@ -20,9 +20,8 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import title_state
 from sound_utils import (
-    ALL_EMOJIS,
-    DEBOUNCE_DIR,
     EMOJI_WORKING,
     log,
     play_sound,
@@ -42,19 +41,17 @@ IGNORED_PROMPTS = [
 
 
 def get_debounce_path(session_id: str) -> str:
-    return os.path.join(DEBOUNCE_DIR, f"{session_id}")
+    return title_state.debounce_path(session_id)
 
 
 def get_origin_path(session_id: str) -> str:
-    return os.path.join(DEBOUNCE_DIR, f"{session_id}.origin")
+    return title_state.origin_path(session_id)
 
 
 def should_skip(session_id: str, prompt: str) -> str | None:
     """Return a skip reason string, or None to proceed."""
-    debounce_path = get_debounce_path(session_id)
-
     # First message always triggers (no debounce file yet)
-    if not os.path.exists(debounce_path):
+    if not title_state.exists(session_id):
         return None
 
     # Short prompts never trigger (after the first message)
@@ -63,11 +60,11 @@ def should_skip(session_id: str, prompt: str) -> str | None:
 
     # Check cooldown
     try:
-        last_time = float(open(debounce_path).read().split("\n")[0].strip())
+        last_time = float(title_state.read(session_id).timestamp)
         elapsed = time.time() - last_time
         if elapsed < COOLDOWN_SECONDS:
             return f"cooldown ({elapsed:.0f}s elapsed, {COOLDOWN_SECONDS}s required)"
-    except (ValueError, OSError):
+    except ValueError:
         pass
 
     return None
@@ -75,30 +72,18 @@ def should_skip(session_id: str, prompt: str) -> str | None:
 
 def get_current_title(debounce_path: str) -> str:
     """Read the current title from the debounce file (second line)."""
-    try:
-        lines = open(debounce_path).read().strip().split("\n")
-        if len(lines) >= 2:
-            return strip_emoji(lines[1])
-    except OSError:
-        pass
-    return ""
+    session_id = os.path.basename(debounce_path)
+    return strip_emoji(title_state.read(session_id).title)
 
 
 def get_debounce_timestamp(debounce_path: str) -> str:
-    try:
-        lines = open(debounce_path).read().strip().split("\n")
-        if lines and lines[0]:
-            return lines[0]
-    except OSError:
-        pass
-    return "0"
+    session_id = os.path.basename(debounce_path)
+    return title_state.read(session_id).timestamp
 
 
 def write_debounce(debounce_path: str, timestamp: str, title: str, session_id: str = "") -> None:
     try:
-        os.makedirs(DEBOUNCE_DIR, exist_ok=True)
-        with open(debounce_path, "w") as f:
-            f.write(f"{timestamp}\n{title}")
+        title_state.write(os.path.basename(debounce_path), timestamp, title)
     except OSError as e:
         if session_id:
             log(session_id, "tabtitle", f"debounce write failed: {e}")
@@ -106,17 +91,12 @@ def write_debounce(debounce_path: str, timestamp: str, title: str, session_id: s
 
 def get_origin_message(session_id: str) -> str:
     """Read the origin message that established the current title."""
-    try:
-        return open(get_origin_path(session_id)).read()
-    except OSError:
-        return ""
+    return title_state.read_origin(session_id)
 
 
 def write_origin_message(session_id: str, message: str) -> None:
     """Store the message that established the current title."""
-    os.makedirs(DEBOUNCE_DIR, exist_ok=True)
-    with open(get_origin_path(session_id), "w") as f:
-        f.write(message[:MAX_MSG_CHARS])
+    title_state.write_origin(session_id, message, max_chars=MAX_MSG_CHARS)
 
 
 def strip_emoji(title: str) -> str:

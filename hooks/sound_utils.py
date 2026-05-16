@@ -13,6 +13,9 @@ import subprocess
 import tempfile
 import time
 
+import ghostty_tab
+import title_state
+
 def _namespace() -> str:
     """Runtime namespace for tmp/state paths. Defaults preserve Claude behavior."""
     value = os.environ.get("GHOSTTY_PEON_NAMESPACE", "claude").strip().lower()
@@ -346,96 +349,32 @@ def _get_session_unit(session_id: str) -> tuple[str, str] | None:
     return None
 
 
-TERMINAL_ID_DIR = _env_path("GHOSTTY_PEON_TERMINAL_ID_DIR", _tmp_path("tabterminal"))
+TERMINAL_ID_DIR = ghostty_tab.terminal_id_dir()
 
 
 def capture_terminal_id(session_id: str) -> str | None:
-    """Capture the Ghostty terminal UUID for the currently focused tab.
-
-    Should be called at SessionStart when the session's tab is focused.
-    Persists the ID so subsequent hooks can target this specific tab.
-    Returns the terminal ID, or None on failure.
-    """
-    try:
-        result = subprocess.run(
-            [
-                "osascript",
-                "-e",
-                'tell application "Ghostty"\n'
-                "    set t to focused terminal of selected tab of front window\n"
-                "    return id of t\n"
-                "end tell",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode != 0:
-            return None
-        term_id = result.stdout.strip()
-        if not term_id:
-            return None
-        os.makedirs(TERMINAL_ID_DIR, exist_ok=True)
-        with open(os.path.join(TERMINAL_ID_DIR, session_id), "w") as f:
-            f.write(term_id)
-        return term_id
-    except Exception:
-        return None
+    """Capture the Ghostty terminal UUID for the currently focused tab."""
+    return ghostty_tab.capture_terminal_id(session_id)
 
 
 def is_terminal_owned(term_id: str, exclude_session: str) -> str | None:
-    """Check if another session already owns this terminal.
-
-    Returns the owning session_id if found, None otherwise. Callers decide
-    whether the owner means "nested subagent" or "replacement session in the
-    same Ghostty tab" based on runtime/lifecycle context.
-    """
-    try:
-        for name in os.listdir(TERMINAL_ID_DIR):
-            if name == exclude_session:
-                continue
-            try:
-                existing = open(os.path.join(TERMINAL_ID_DIR, name)).read().strip()
-                if existing == term_id:
-                    return name
-            except OSError:
-                continue
-    except OSError:
-        pass
-    return None
+    """Check if another session already owns this terminal."""
+    return ghostty_tab.is_terminal_owned(term_id, exclude_session)
 
 
 def clear_terminal_owner(term_id: str, exclude_session: str) -> str | None:
-    """Remove a stale/replaced terminal owner and return its session id.
-
-    Pi frequently replaces sessions in-place for fork/resume flows. In that
-    world, terminal ownership is terminal-scoped and the newest interactive
-    session should win. Claude keeps the older subagent-protection behavior.
-    """
-    owner = is_terminal_owned(term_id, exclude_session)
-    if not owner:
-        return None
-    try:
-        os.remove(os.path.join(TERMINAL_ID_DIR, owner))
-    except OSError:
-        pass
-    return owner
+    """Remove a stale/replaced terminal owner and return its session id."""
+    return ghostty_tab.clear_terminal_owner(term_id, exclude_session)
 
 
 def get_terminal_id(session_id: str) -> str | None:
     """Read the persisted Ghostty terminal UUID for a session."""
-    try:
-        return open(os.path.join(TERMINAL_ID_DIR, session_id)).read().strip() or None
-    except OSError:
-        return None
+    return ghostty_tab.get_terminal_id(session_id)
 
 
 def release_terminal_id(session_id: str) -> None:
     """Delete the persisted terminal ID for a session. Silent on failure."""
-    try:
-        os.remove(os.path.join(TERMINAL_ID_DIR, session_id))
-    except OSError:
-        pass
+    ghostty_tab.release_terminal_id(session_id)
 
 
 def _plan_handoff_path(term_id: str) -> str:
@@ -478,82 +417,13 @@ def consume_plan_handoff(term_id: str, ttl_seconds: int = 120) -> str | None:
 
 
 def set_tab_title(title: str, session_id: str | None = None) -> bool:
-    """Set a Ghostty tab title, targeting the session's specific terminal.
-
-    If session_id is provided and a terminal ID was captured, uses targeted
-    AppleScript to address the correct tab regardless of which tab is focused.
-    Falls back to 'selected tab of front window' if no terminal ID is available.
-    """
-    term_id = get_terminal_id(session_id) if session_id else None
-    if session_id:
-        if term_id:
-            log(session_id, "tabtitle", f"target: term_id={term_id!r}")
-        else:
-            log(session_id, "tabtitle", "target: SKIPPED (no term_id, refusing unsafe fallback)")
-            return False
-    if term_id:
-        script = (
-            'tell application "Ghostty"\n'
-            f'    perform action "set_tab_title:{title}" on '
-            f'(first terminal whose id is "{term_id}")\n'
-            "end tell"
-        )
-    else:
-        script = (
-            'tell application "Ghostty"\n'
-            "    set t to focused terminal of selected tab of front window\n"
-            f'    perform action "set_tab_title:{title}" on t\n'
-            "end tell"
-        )
-    try:
-        result = subprocess.run(
-            ["osascript", "-e", script],
-            capture_output=True,
-            timeout=5,
-        )
-        if result.returncode != 0 and session_id:
-            stderr = result.stderr.strip() if isinstance(result.stderr, str) else (result.stderr or b"").decode().strip()
-            log(session_id, "tabtitle", f"osascript failed: rc={result.returncode} stderr={stderr!r}")
-        return result.returncode == 0
-    except (subprocess.SubprocessError, OSError) as e:
-        if session_id:
-            log(session_id, "tabtitle", f"osascript exception: {e}")
-        return False
+    """Set a Ghostty tab title, targeting the session's specific terminal."""
+    return ghostty_tab.set_tab_title(title, session_id, log_fn=log)
 
 
 def is_tab_focused(session_id: str) -> bool:
-    """Check if the session's Ghostty tab is currently focused.
-
-    Returns True only if Ghostty is the frontmost app AND this session's
-    terminal is the focused terminal. Returns False on any error (safe default:
-    sound plays).
-    """
-    term_id = get_terminal_id(session_id) if session_id else None
-    if not term_id:
-        return False
-    try:
-        script = (
-            'tell application "System Events"\n'
-            '    set frontApp to name of first application process whose frontmost is true\n'
-            'end tell\n'
-            'if frontApp is not "Ghostty" then return "NOT_FRONTMOST"\n'
-            'tell application "Ghostty"\n'
-            '    set t to focused terminal of selected tab of front window\n'
-            '    return id of t\n'
-            'end tell'
-        )
-        result = subprocess.run(
-            ["osascript", "-e", script],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode != 0:
-            return False
-        focused_id = result.stdout.strip()
-        return focused_id == term_id
-    except Exception:
-        return False
+    """Check if the session's Ghostty tab is currently focused."""
+    return ghostty_tab.is_tab_focused(session_id)
 
 
 def set_attention_emoji(
@@ -580,9 +450,7 @@ def set_attention_emoji(
 
     # Persist emoji state in debounce file
     try:
-        os.makedirs(DEBOUNCE_DIR, exist_ok=True)
-        with open(os.path.join(DEBOUNCE_DIR, session_id), "w") as f:
-            f.write(f"{timestamp}\n{new_title}")
+        title_state.write(session_id, timestamp, new_title)
     except OSError as e:
         log(session_id, hook_name, f"debounce write failed: {e}")
 
@@ -617,9 +485,7 @@ def set_status_emoji(
 
     # Persist emoji state in debounce file
     try:
-        os.makedirs(DEBOUNCE_DIR, exist_ok=True)
-        with open(os.path.join(DEBOUNCE_DIR, session_id), "w") as f:
-            f.write(f"{timestamp}\n{new_title}")
+        title_state.write(session_id, timestamp, new_title)
     except OSError as e:
         log(session_id, hook_name, f"debounce write failed: {e}")
 

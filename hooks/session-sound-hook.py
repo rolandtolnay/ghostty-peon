@@ -21,8 +21,9 @@ if os.environ.get("_CLAUDE_NO_SOUND"):
     sys.exit(0)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lifecycle_policy
+import title_state
 from sound_utils import (
-    DEBOUNCE_DIR,
     assign_unit,
     capture_terminal_id,
     clear_terminal_owner,
@@ -59,11 +60,9 @@ def apply_title_handoff(term_id: str | None) -> bool:
     if not title:
         return False
     try:
-        os.makedirs(DEBOUNCE_DIR, exist_ok=True)
-        with open(os.path.join(DEBOUNCE_DIR, session_id), "w") as f:
-            # Timestamp 0 lets the first prompt after fork/plan handoff re-evaluate
-            # immediately instead of being blocked by the normal rename cooldown.
-            f.write(f"0\n{title}")
+        # Timestamp 0 lets the first prompt after fork/plan handoff re-evaluate
+        # immediately instead of being blocked by the normal rename cooldown.
+        title_state.write(session_id, "0", title)
     except OSError as e:
         log(session_id, "session", f"handoff debounce write failed: {e}")
         return False
@@ -76,11 +75,7 @@ def apply_title_handoff(term_id: str | None) -> bool:
 
 def restore_existing_title() -> bool:
     """Restore this session's persisted title, if one exists."""
-    try:
-        lines = open(os.path.join(DEBOUNCE_DIR, session_id)).read().strip().split("\n")
-    except OSError:
-        return False
-    title = lines[1].strip() if len(lines) >= 2 else ""
+    title = title_state.read(session_id).title.strip()
     if not title:
         return False
     if set_tab_title(title, session_id):
@@ -128,8 +123,10 @@ def capture_and_claim(label: str, replace_existing_owner: bool = False) -> str |
     sys.exit(0)
 
 
+runtime = _namespace()
+
 if source in {"startup", "new", "fork"}:
-    term_id = capture_and_claim(source, replace_existing_owner=source in {"new", "fork"})
+    term_id = capture_and_claim(source, replace_existing_owner=lifecycle_policy.start_replaces_terminal_owner(runtime, source))
     unit = assign_unit(session_id, cwd)
     log(session_id, "session", f"{source} -> assigned unit={unit!r}")
     if not apply_title_handoff(term_id):
@@ -138,11 +135,11 @@ if source in {"startup", "new", "fork"}:
     if unit:
         play_sound("session.start", session_id)
 elif source == "clear":
-    debounce_path = os.path.join(DEBOUNCE_DIR, session_id)
-    try:
-        os.remove(debounce_path)
+    had_debounce = title_state.exists(session_id)
+    title_state.delete(session_id, include_origin=False)
+    if had_debounce:
         log(session_id, "session", "clear -> debounce file deleted")
-    except OSError:
+    else:
         log(session_id, "session", "clear -> no debounce file to delete")
     term_id = capture_and_claim("clear")
     unit = assign_unit(session_id, cwd)
@@ -151,7 +148,7 @@ elif source == "clear":
     if unit:
         play_sound("session.start", session_id)
 elif source == "resume":
-    term_id = capture_and_claim("resume", replace_existing_owner=True)
+    term_id = capture_and_claim("resume", replace_existing_owner=lifecycle_policy.start_replaces_terminal_owner(runtime, source))
     if not apply_title_handoff(term_id) and not restore_existing_title():
         reset_to_folder("resume")
     existing = _get_session_unit(session_id)
@@ -161,7 +158,7 @@ elif source == "resume":
     else:
         log(session_id, "session", f"resume -> existing unit={existing[1]!r}")
 elif source == "compact":
-    capture_and_claim("compact", replace_existing_owner=True)
+    capture_and_claim("compact", replace_existing_owner=lifecycle_policy.start_replaces_terminal_owner(runtime, source))
     if not restore_existing_title():
         log(session_id, "session", "compact -> no existing title to restore")
 else:

@@ -17,8 +17,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import title_state
 from sound_utils import (
-    DEBOUNCE_DIR,
     EMOJI_QUESTION,
     EMOJI_READY,
     log,
@@ -30,12 +30,9 @@ from sound_utils import (
 
 def read_debounce(session_id: str) -> tuple[str, str]:
     """Read timestamp and raw title from debounce file."""
-    try:
-        lines = open(os.path.join(DEBOUNCE_DIR, session_id)).read().strip().split("\n")
-        if len(lines) >= 2:
-            return lines[0], lines[1]
-    except OSError:
-        pass
+    state = title_state.read(session_id)
+    if state.has_title:
+        return state.timestamp, state.title
     return "0", ""
 
 

@@ -20,9 +20,9 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import title_state
 from sound_utils import (
     ALL_EMOJIS,
-    DEBOUNCE_DIR,
     EMOJI_BLOCKED,
     EMOJI_QUESTION,
     EMOJI_WORKING,
@@ -35,7 +35,7 @@ from sound_utils import (
 
 
 def get_debounce_path(session_id: str) -> str:
-    return os.path.join(DEBOUNCE_DIR, f"{session_id}")
+    return title_state.debounce_path(session_id)
 
 
 def read_debounce(session_id: str) -> tuple[str, str, str]:
@@ -44,24 +44,15 @@ def read_debounce(session_id: str) -> tuple[str, str, str]:
     Plan state: '' (none), 'planpending' (set at PermissionRequest:ExitPlanMode,
     consumed by session-end-hook.py to skip title reset).
     """
-    try:
-        lines = open(get_debounce_path(session_id)).read().strip().split("\n")
-        if len(lines) >= 2:
-            plan_state = lines[2] if len(lines) >= 3 else ""
-            return lines[0], lines[1], plan_state
-    except OSError:
-        pass
+    state = title_state.read(session_id)
+    if state.has_title:
+        return state.timestamp, state.title, state.plan_state
     return "0", "", ""
 
 
 def write_debounce(session_id: str, timestamp: str, title: str, plan_state: str = "") -> None:
-    debounce_path = get_debounce_path(session_id)
     try:
-        os.makedirs(DEBOUNCE_DIR, exist_ok=True)
-        with open(debounce_path, "w") as f:
-            f.write(f"{timestamp}\n{title}")
-            if plan_state:
-                f.write(f"\n{plan_state}")
+        title_state.write(session_id, timestamp, title, plan_state=plan_state)
     except OSError:
         pass
 
