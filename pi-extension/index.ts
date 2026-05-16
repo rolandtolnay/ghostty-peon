@@ -100,8 +100,12 @@ function isGhosttyEnv() {
 	);
 }
 
+function isSubagentChild() {
+	return process.env.PI_SUBAGENT_CHILD === "1";
+}
+
 function isInteractiveGhosttyTerminal() {
-	return isGhosttyEnv() && Boolean(process.stdin.isTTY && process.stdout.isTTY);
+	return !isSubagentChild() && isGhosttyEnv() && Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }
 
 function isInteractiveGhostty(ctx: ExtensionContext) {
