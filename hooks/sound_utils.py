@@ -371,6 +371,21 @@ def consume_plan_handoff(term_id: str, ttl_seconds: int = 120) -> str | None:
     return title_handoff.consume(term_id, ttl_seconds=ttl_seconds)
 
 
+def write_replacement_handoff(target_session_file_or_id: str, term_id: str, title: str = "") -> bool:
+    """Persist the terminal/title handoff for a Pi replacement target."""
+    return title_handoff.write_replacement(target_session_file_or_id, term_id, title)
+
+
+def consume_replacement_handoff(session_id: str, session_file: str = "", ttl_seconds: int = 120) -> dict | None:
+    """Read and delete a fresh Pi replacement handoff for this session."""
+    return title_handoff.consume_replacement(session_id, session_file, ttl_seconds=ttl_seconds)
+
+
+def save_terminal_id(session_id: str, term_id: str) -> None:
+    """Persist a known Ghostty terminal id for a session."""
+    ghostty_tab.save_terminal_id(session_id, term_id)
+
+
 def set_tab_title(title: str, session_id: str | None = None) -> bool:
     """Set a Ghostty tab title, targeting the session's specific terminal."""
     return ghostty_tab.set_tab_title(title, session_id, log_fn=log)

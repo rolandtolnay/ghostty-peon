@@ -23,6 +23,7 @@ from sound_utils import (
     set_tab_title,
     strip_all_emojis,
     write_plan_handoff,
+    write_replacement_handoff,
     _namespace,
 )
 
@@ -30,6 +31,7 @@ data = json.load(sys.stdin)
 session_id = data.get("session_id", "unknown")
 cwd = data.get("cwd", "")
 shutdown_reason = data.get("shutdown_reason", "")
+target_session_file = data.get("target_session_file", "")
 
 
 def read_debounce_lines() -> list[str]:
@@ -76,6 +78,16 @@ if lifecycle_policy.should_write_fork_handoff(runtime, shutdown_reason, plan_acc
 
 replacement_flow = lifecycle_policy.is_replacement_shutdown(runtime, shutdown_reason)
 if replacement_flow:
+    if term_id and target_session_file:
+        handoff_title = f"{EMOJI_WORKING} {clean_title}" if clean_title else ""
+        if write_replacement_handoff(target_session_file, term_id, handoff_title):
+            log(session_id, "session", f"end -> replacement handoff written for Pi {shutdown_reason}")
+        else:
+            log(session_id, "session", f"end -> replacement handoff write failed for Pi {shutdown_reason}")
+    elif term_id:
+        log(session_id, "session", f"end -> replacement handoff skipped: no target for Pi {shutdown_reason}")
+    else:
+        log(session_id, "session", f"end -> replacement handoff skipped: no terminal id for Pi {shutdown_reason}")
     log(session_id, "session", f"end -> preserved tab title for Pi {shutdown_reason}")
 elif lifecycle_policy.should_reset_title_on_end(runtime, shutdown_reason, plan_accepted):
     # Reset tab title to directory name before releasing terminal ID.

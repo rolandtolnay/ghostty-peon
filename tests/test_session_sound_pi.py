@@ -45,6 +45,44 @@ class PiSessionSoundHookTests(unittest.TestCase):
             self.assertEqual((dirs["terminal"] / "fork-session").read_text(), "term-owned")
             self.assertIn("fork -> replaced terminal owner 'old-session'", read_log(root))
 
+    def test_pi_new_replacement_claims_outgoing_terminal_not_focused_tab(self):
+        with hook_test_env(fake_term_id="term-focused-other") as (root, env, dirs):
+            old_session = "old-session"
+            new_session = "new-session"
+            (dirs["terminal"] / old_session).write_text("term-outgoing")
+            (dirs["terminal"] / "other-session").write_text("term-focused-other")
+            (dirs["debounce"] / old_session).write_text("123\n🌿 fix-pi-subagent-trust-error\n")
+
+            end_result = run_hook(
+                "session-end-hook.py",
+                {
+                    "session_id": old_session,
+                    "cwd": str(root / "project"),
+                    "shutdown_reason": "new",
+                    "target_session_file": f"/tmp/{new_session}.jsonl",
+                },
+                env,
+            )
+            assert_hook_ok(self, end_result)
+
+            start_result = run_hook(
+                "session-sound-hook.py",
+                {
+                    "session_id": new_session,
+                    "cwd": str(root / "project"),
+                    "source": "new",
+                    "pi_reason": "new",
+                    "session_file": f"/tmp/{new_session}.jsonl",
+                    "previous_session_file": f"/tmp/{old_session}.jsonl",
+                },
+                env,
+            )
+
+            assert_hook_ok(self, start_result)
+            self.assertEqual((dirs["terminal"] / new_session).read_text(), "term-outgoing")
+            self.assertEqual((dirs["terminal"] / "other-session").read_text(), "term-focused-other")
+            self.assertIn("new -> restored replacement terminal_id='term-outgoing'", read_log(root))
+
     def test_resume_without_handoff_or_title_resets_to_folder(self):
         with hook_test_env(fake_term_id="term-resume") as (root, env, dirs):
             project = root / "resume-project"

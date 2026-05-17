@@ -272,10 +272,11 @@ Claude behavior:
 
 Pi behavior:
 1. Keeps debounce + origin files only for replacement flows (`new`, `fork`, `resume`) so active session switches can restore titles
-2. On `/fork`, writes a terminal-scoped handoff so the replacement session inherits the visible title immediately
-3. On `/new`, `/fork`, and `/resume`, avoids resetting the tab to the folder name during replacement
-4. On normal `quit`, resets the tab title to the folder name and cleans debounce/origin state so the tab no longer appears active
-5. Releases unit assignment and terminal UUID for the outgoing process
+2. On `/new`, `/fork`, and `/resume`, writes a target-session replacement handoff with the outgoing terminal UUID so the replacement session does not depend on whichever Ghostty tab is focused
+3. On `/fork`, also writes a terminal-scoped title handoff so the replacement session inherits the visible title immediately
+4. On `/new`, `/fork`, and `/resume`, avoids resetting the tab to the folder name during replacement
+5. On normal `quit`, resets the tab title to the folder name and cleans debounce/origin state so the tab no longer appears active
+6. Releases unit assignment and terminal UUID for the outgoing process
 
 ### Plan Acceptance
 
@@ -376,7 +377,7 @@ Pi uses a separate runtime namespace from Claude Code:
 ~/.ghostty-peon/pi-weights.json
 ```
 
-Pi runner log lines include lifecycle metadata such as `event session_start reason=...`, `event session_shutdown reason=...`, `event session_before_fork`, and `event session_compact`. Use these with the session suffix to distinguish normal startup, trust/new-session flows, fork replacement, resume, and compaction.
+Pi runner log lines include lifecycle metadata such as `event session_start reason=...`, `event session_shutdown reason=...`, `event session_before_fork`, and `event session_compact`. Use these with the session suffix to distinguish normal startup, trust/new-session flows, fork replacement, resume, and compaction. For replacement flows, look for `replacement handoff written` on shutdown followed by `restored replacement terminal_id=...` on the new session; if the start falls back to `captured terminal_id=...`, there was no usable target-session handoff.
 
 Claude Code continues to use `/tmp/claude-*` paths and `~/.ghostty-peon/weights.json`.
 

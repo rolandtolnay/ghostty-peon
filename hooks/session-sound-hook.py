@@ -28,10 +28,12 @@ from sound_utils import (
     capture_terminal_id,
     clear_terminal_owner,
     consume_plan_handoff,
+    consume_replacement_handoff,
     is_terminal_owned,
     log,
     play_sound,
     release_terminal_id,
+    save_terminal_id,
     set_tab_title,
     _get_session_unit,
     _namespace,
@@ -85,6 +87,38 @@ def restore_existing_title() -> bool:
     return False
 
 
+def restore_replacement_handoff(label: str) -> str | None:
+    """Claim the outgoing Pi terminal for an in-tab replacement session."""
+    handoff = consume_replacement_handoff(session_id, session_file)
+    if not handoff:
+        return None
+    term_id = handoff.get("terminal_id", "")
+    if not term_id:
+        return None
+    try:
+        save_terminal_id(session_id, term_id)
+    except OSError as e:
+        log(session_id, "session", f"{label} -> replacement terminal_id write failed: {e}")
+        return None
+
+    replaced = clear_terminal_owner(term_id, session_id)
+    if replaced:
+        log(session_id, "session", f"{label} -> replaced terminal owner {replaced!r}")
+    log(session_id, "session", f"{label} -> restored replacement terminal_id={term_id!r}")
+
+    title = handoff.get("title", "")
+    if title:
+        try:
+            title_state.write(session_id, "0", title)
+        except OSError as e:
+            log(session_id, "session", f"{label} -> replacement debounce write failed: {e}")
+        if set_tab_title(title, session_id):
+            log(session_id, "session", f"{label} -> restored replacement title {title!r}")
+        else:
+            log(session_id, "session", f"{label} -> replacement set_tab_title failed")
+    return term_id
+
+
 def reset_to_folder(label: str) -> bool:
     folder_name = os.path.basename(cwd) if cwd else ""
     if not folder_name:
@@ -126,7 +160,11 @@ def capture_and_claim(label: str, replace_existing_owner: bool = False) -> str |
 runtime = _namespace()
 
 if source in {"startup", "new", "fork"}:
-    term_id = capture_and_claim(source, replace_existing_owner=lifecycle_policy.start_replaces_terminal_owner(runtime, source))
+    term_id = None
+    if lifecycle_policy.start_replaces_terminal_owner(runtime, source):
+        term_id = restore_replacement_handoff(source)
+    if not term_id:
+        term_id = capture_and_claim(source, replace_existing_owner=lifecycle_policy.start_replaces_terminal_owner(runtime, source))
     unit = assign_unit(session_id, cwd)
     log(session_id, "session", f"{source} -> assigned unit={unit!r}")
     if not apply_title_handoff(term_id):
@@ -148,7 +186,9 @@ elif source == "clear":
     if unit:
         play_sound("session.start", session_id)
 elif source == "resume":
-    term_id = capture_and_claim("resume", replace_existing_owner=lifecycle_policy.start_replaces_terminal_owner(runtime, source))
+    term_id = restore_replacement_handoff("resume")
+    if not term_id:
+        term_id = capture_and_claim("resume", replace_existing_owner=lifecycle_policy.start_replaces_terminal_owner(runtime, source))
     if not apply_title_handoff(term_id) and not restore_existing_title():
         reset_to_folder("resume")
     existing = _get_session_unit(session_id)

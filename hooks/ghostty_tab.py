@@ -25,6 +25,13 @@ def terminal_id_path(session_id: str) -> str:
     return os.path.join(terminal_id_dir(), session_id)
 
 
+def save_terminal_id(session_id: str, term_id: str) -> None:
+    """Persist a known Ghostty terminal UUID for a session."""
+    os.makedirs(terminal_id_dir(), exist_ok=True)
+    with open(terminal_id_path(session_id), "w") as f:
+        f.write(term_id)
+
+
 def capture_terminal_id(session_id: str) -> str | None:
     """Capture and persist the Ghostty terminal UUID for the focused tab."""
     try:
@@ -46,9 +53,7 @@ def capture_terminal_id(session_id: str) -> str | None:
         term_id = result.stdout.strip()
         if not term_id:
             return None
-        os.makedirs(terminal_id_dir(), exist_ok=True)
-        with open(terminal_id_path(session_id), "w") as f:
-            f.write(term_id)
+        save_terminal_id(session_id, term_id)
         return term_id
     except Exception:
         return None
