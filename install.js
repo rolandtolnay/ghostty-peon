@@ -699,7 +699,7 @@ function checkOllamaAndPrintDone(targets) {
 
 function printDone(targets) {
   console.log(`\nDone! Next steps:`);
-  console.log(`  1. Make sure Ollama is running: ollama pull qwen3.5:4b`);
+  console.log(`  1. Make sure Ollama is running: ollama pull gemma4:e2b`);
   if (targets.includes("pi")) console.log(`  2. In Pi, run /reload or restart Pi.`);
   console.log(`  ${targets.includes("pi") ? "3" : "2"}. Source the shell function (optional):`);
   console.log(`     source ${path.join(REPO_ROOT, "peon-class.sh")}`);

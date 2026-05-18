@@ -6,7 +6,7 @@ import urllib.request
 from pathlib import Path
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
-MODEL = "gemma4:e4b"
+MODEL = "gemma4:e2b"
 DEFAULT_CTX = 8192
 
 LOG_DIR = Path.home() / ".local" / "share" / "local-llm"

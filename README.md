@@ -66,7 +66,7 @@ Four classes with 7 units each. Sessions are assigned a unique unit per project 
 - macOS
 - [Ghostty](https://ghostty.org/) terminal
 - Claude Code and/or Pi
-- [Ollama](https://ollama.com/) with the default local model: `qwen3.5:4b`
+- [Ollama](https://ollama.com/) with the default local model: `gemma4:e2b`
 - `python3` (system Python; no pip dependencies)
 - Node.js (installer only)
 
@@ -76,7 +76,7 @@ Four classes with 7 units each. Sessions are assigned a unique unit per project 
 git clone https://github.com/rolandtolnay/ghostty-peon.git
 cd ghostty-peon
 
-ollama pull qwen3.5:4b
+ollama pull gemma4:e2b
 node install.js
 ```
 
@@ -132,10 +132,10 @@ Settings are project-local:
 
 ### Changing the LLM model
 
-The default model is `qwen3.5:4b` via local Ollama. To use a different model, edit the `MODEL` constant in `client.py`:
+The default model is `gemma4:e2b` via local Ollama. To use a different model, edit the `MODEL` constant in `client.py`:
 
 ```python
-MODEL = "qwen3.5:4b"  # Change to any Ollama model
+MODEL = "gemma4:e2b"  # Change to any Ollama model
 ```
 
 For a non-Ollama backend, replace the `llm()` function body in `client.py`. The hooks only depend on the signature: `llm(prompt, system=, temperature=, max_tokens=, num_ctx=, tag=, timeout=) -> str`.

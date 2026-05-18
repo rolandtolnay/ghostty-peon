@@ -35,7 +35,7 @@ See `docs/debugging.md` for log inspection and troubleshooting.
 ## Dependencies
 
 - python3 (system) — all hooks are pure stdlib
-- Ollama with qwen3.5:4b — for slug generation and question classification
+- Ollama with gemma4:e2b — for slug generation and question classification
 - macOS (afplay, osascript) — sound playback and Ghostty tab control
 - Ghostty terminal — tab title API via AppleScript
 - Node.js — installer only

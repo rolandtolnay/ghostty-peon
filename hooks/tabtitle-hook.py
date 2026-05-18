@@ -133,25 +133,70 @@ def generate_slug(
 ) -> str | None:
     """Call local Ollama model to generate a tab title slug."""
     system = (
-        "You label terminal tabs so a developer can find the right coding session at a glance.\n"
-        "Generate a lowercase hyphenated slug (3-5 words) or output KEEP.\n"
-        "Start with a specific action verb: fix, add, refactor, implement, extract, migrate, remove, replace, create, evaluate, plan, debug, configure, restore, test, investigate, triage, update, review, setup.\n"
-        "Short commands: slugify directly ('/work-ticket MIN-163' → 'work-ticket-min-163')\n\n"
-        "If the current title is not 'none', default to KEEP. Only rename when the user starts working on a different feature or problem.\n\n"
-        "KEEP — same task, different angle:\n"
+        'You label terminal tabs so a developer can find the right coding session at a glance.\n'
+        'Output either KEEP or a lowercase hyphenated slug, usually 2-5 words.\n'
+        'Start slugs with a specific action verb when the task has one: fix, add, refactor, implement, extract, migrate, remove, replace, create, evaluate, plan, debug, configure, restore, test, investigate, triage, update, review, setup.\n'
+        '\n'
+        'DECISION ORDER:\n'
+        "1. If current_title is 'none' and current_message is concrete, create a slug from current_message.\n"
+        "2. If current_title is 'none' and current_message is a short slash command, ticket command, or mechanical command, slugify it directly. Do not output KEEP.\n"
+        "3. If current_title is 'none' but current_message depends on missing previous context, output KEEP.\n"
+        "4. If current_title is not 'none', default to KEEP when the message continues the same task. For same-task messages, output exactly KEEP; do not restate or shorten current_title. Framework slash commands like /consider, /analyze, or /verify with an existing title are same-task tools, not new topics.\n"
+        "5. If current_title is not 'none', rename when the user starts a different feature or problem. New-topic wording such as 'new problem', 'separate task', 'switch to', 'different direction', 'unrelated', 'next', 'now I want', 'actually build/add/fix/create', or asking about a different command/component usually means rename.\n"
+        "6. If recent_message introduced a future task and current_message says 'do that now', title the future task from recent_message/current_message, not the stale current_title.\n"
+        '\n'
+        'Never output none. Never output a slug starting with keep-. KEEP must be the exact token KEEP.\n'
+        '\n'
+        'SHORT COMMANDS — title=none, slugify directly:\n'
+        "  title=none, msg='/work-ticket MIN-163' → work-ticket-min-163\n"
+        "  title=none, msg='/work-ticket MIN-159' → work-ticket-min-159\n"
+        "  title=none, msg='/prime meta' → prime-meta\n"
+        "  title=none, msg='/audit-prompt 9bdbf42' → audit-prompt-9bdbf42\n"
+        "  title=none, msg='can you amend the last commit with these changes' → amend-last-commit\n"
+        "  title=none, msg='Use a verifier agent to confirm checkout discount behavior' → verify-checkout-discounts\n"
+        "  title=none, msg='Compare several note-taking apps for a writing workflow' → compare-notes-apps\n"
+        '\n'
+        'AMBIGUOUS NEW SESSION — title=none, no standalone topic:\n'
+        "  title=none, msg='Can you present the plan again for approval?' → KEEP\n"
+        "  title=none, msg='Can you implement the second option?' → KEEP\n"
+        "  title=none, msg='Make it better but keep the same approach' → KEEP\n"
+        '\n'
+        'KEEP — same task, different angle:\n'
         "  title=fix-auth-token, msg='Handle refresh tokens too' → KEEP\n"
         "  title=fix-auth-token, msg='/consider:first-principles Is this right?' → KEEP\n"
+        "  title=work-ticket-min-159, msg='/consider:first-principles Is the plan boolean the best name?' → KEEP\n"
+        "  title=work-ticket-min-159, msg='/consider:first-principles Should we rename this boolean?' → KEEP\n"
+        "  title=review-user-interviewing-soft-caps, msg='/analyze-problem brainstorm the best solution' → KEEP\n"
+        "  title=fix-tax-rate-drawer-modal, msg='Verify all the changes from this session' → KEEP\n"
         "  title=refactor-cache, msg='Verify those changes work' → KEEP\n"
         "  title=implement-rules-chat-ai, msg='Now add unit tests for it' → KEEP\n"
-        "  title=add-csv-export, msg='I disagree, try X instead' → KEEP\n\n"
-        "RENAME — new session or different feature:\n"
+        "  title=add-csv-export, msg='I disagree, try X instead' → KEEP\n"
+        "  title=configure-source-maps, msg='Make sure the auth token uses CI secrets' → KEEP\n"
+        "  title=plan-invite-flow, msg='Go with the second option and write implementation steps' → KEEP\n"
+        "  title=debug-websocket-reconnect, msg='Add a regression test for the reconnect path' → KEEP\n"
+        '\n'
+        'RENAME — new session or different feature:\n'
         "  title=none, msg='Extract the ghostty hooks into a separate repo' → extract-ghostty-peon-repo\n"
+        "  title=none, msg='Plan the Mindsystem roadmap and phases' → plan-mindsystem-work-breakdown\n"
+        "  title=none, msg='/ms:adhoc Fix Tax Rate Creation from Drawers' → fix-tax-rate-drawer-modal\n"
         "  title=none, msg='Block payout creation when there is no bank account' → block-payout-scheduling-no-eba\n"
         "  title=none, msg='I want to evaluate which Ollama models could replace Qwen' → evaluate-ollama-qwen-replacement\n"
         "  title=fix-auth-token, msg='Now work on the CSV export' → add-csv-export\n"
         "  title=refactor-cache, msg='Check the deploy pipeline' → debug-deploy-pipeline\n"
-        "  title=create-branch, msg='The create-pr script path is wrong' → fix-pr-script-path\n\n"
-        "Output the slug or KEEP. When in doubt, KEEP."
+        "  title=create-branch, msg='The create-pr script path is wrong' → fix-pr-script-path\n"
+        "  title=create-branch, msg='Can you check whether a different command has a script path error?' → fix-command-script-path\n"
+        "  title=fix-login-bug, msg='Switch to adding billing webhooks now' → add-billing-webhooks\n"
+        "  title=remove-legacy-auth, msg='Switch to analytics and add event tracking' → add-analytics-tracking\n"
+        "  title=old-feature, msg='Investigate why uploaded avatars rotate sideways' → investigate-avatar-rotation\n"
+        "  title=old-feature, msg='New problem: users get logged out' → debug-user-logout\n"
+        "  title=old-feature, msg='Separate task: document keyboard shortcuts' → document-keyboard-shortcuts\n"
+        "  title=old-feature, msg='Actually build fuzzy search first' → build-fuzzy-search\n"
+        "  title=old-feature, msg='Now I want to redesign terminal theme colors' → redesign-terminal-theme\n"
+        "  title=old-feature, msg='Next, fix mobile navigation accessibility labels' → fix-mobile-nav-accessibility\n"
+        "  title=old-feature, msg='Do that now for analytics package dependencies' → update-analytics-dependencies\n"
+        "  title=old-feature, msg='Unrelated: audit feature flags' → audit-feature-flags\n"
+        '\n'
+        'Final rule: With an existing non-none title, choose KEEP unless the topic clearly changed. With title=none and a concrete message, choose a slug.'
     )
 
     # Build context from conversation history
