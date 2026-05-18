@@ -64,7 +64,8 @@ def _rotate_log_on_new_day() -> None:
     """
     today = datetime.date.today().isoformat()
     try:
-        last = open(_LOG_DATE_FILE).read().strip()
+        with open(_LOG_DATE_FILE) as f:
+            last = f.read().strip()
     except OSError:
         last = ""
     if last != today:
@@ -96,7 +97,8 @@ def log(session_id: str, hook: str, message: str) -> None:
 def _read_last_played(category_key: str) -> str:
     """Read the last played filename for a category. Returns '' on any failure."""
     try:
-        return open(os.path.join(SOUND_LAST_DIR, category_key)).read().strip()
+        with open(os.path.join(SOUND_LAST_DIR, category_key)) as f:
+            return f.read().strip()
     except OSError:
         return ""
 
@@ -256,7 +258,8 @@ def assign_unit(session_id: str, cwd: str) -> str | None:
                 continue
             path = os.path.join(project_dir, name)
             try:
-                lines = open(path).read().strip().split("\n")
+                with open(path) as f:
+                    lines = f.read().strip().split("\n")
                 if len(lines) >= 2:
                     assigned_units.add(lines[1])
             except OSError:
@@ -326,9 +329,11 @@ def _get_session_unit(session_id: str) -> tuple[str, str] | None:
     """
     try:
         index_path = os.path.join(SESSION_INDEX_DIR, session_id)
-        pkey = open(index_path).read().strip()
+        with open(index_path) as f:
+            pkey = f.read().strip()
         assign_path = os.path.join(UNIT_ASSIGN_DIR, pkey, session_id)
-        lines = open(assign_path).read().strip().split("\n")
+        with open(assign_path) as f:
+            lines = f.read().strip().split("\n")
         if len(lines) >= 2:
             return (lines[0], lines[1])
     except OSError:
