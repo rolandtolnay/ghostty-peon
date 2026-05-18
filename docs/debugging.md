@@ -255,8 +255,8 @@ Tier 2 heuristic for detecting when Claude stops with a question.
 ### `session-sound-hook.py` (SessionStart)
 
 Handles Pi-first lifecycle `source` values:
-- `startup` / `new` / `fork`: captures terminal UUID, claims terminal ownership, assigns unit via `assign_unit()`, plays `session.start`
-- `resume`: captures terminal UUID, restores that session's persisted title if present, assigns unit only if no existing assignment
+- `startup` / `new` / `fork`: captures terminal UUID, claims terminal ownership, assigns unit via `assign_unit()`, plays `session.start`; `new` restores the outgoing visible title/status when a replacement handoff exists
+- `resume`: captures terminal UUID, restores the replacement or persisted title if present, assigns unit only if no existing assignment
 - `compact`: re-captures terminal UUID and restores the persisted title after compaction
 - `clear`: legacy Claude-style clear support; deletes debounce file, re-captures UUID, re-assigns unit
 
@@ -273,10 +273,11 @@ Claude behavior:
 Pi behavior:
 1. Keeps debounce + origin files only for replacement flows (`new`, `fork`, `resume`) so active session switches can restore titles
 2. On `/new`, `/fork`, and `/resume`, writes a target-session replacement handoff with the outgoing terminal UUID so the replacement session does not depend on whichever Ghostty tab is focused
-3. On `/fork`, also writes a terminal-scoped title handoff so the replacement session inherits the visible title immediately
-4. On `/new`, `/fork`, and `/resume`, avoids resetting the tab to the folder name during replacement
-5. On normal `quit`, resets the tab title to the folder name and cleans debounce/origin state so the tab no longer appears active
-6. Releases unit assignment and terminal UUID for the outgoing process
+3. On `/new` and `/resume`, preserves the outgoing visible title/status (for example `🌿 <title>`); `/fork` and plan continuation hand off `🌀 <title>` because they continue active work
+4. On `/fork`, also writes a terminal-scoped title handoff so the replacement session inherits the visible title immediately
+5. On `/new`, `/fork`, and `/resume`, avoids resetting the tab to the folder name during replacement
+6. On normal `quit`, resets the tab title to the folder name and cleans debounce/origin state so the tab no longer appears active
+7. Releases unit assignment and terminal UUID for the outgoing process
 
 ### Plan Acceptance
 

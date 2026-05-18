@@ -42,6 +42,41 @@ class PiSessionEndHookTests(unittest.TestCase):
             self.assertIn("end -> kept debounce state for Pi replacement", log)
             self.assertIn("end -> unit + terminal_id released", log)
 
+    def test_pi_new_preserves_ready_status_in_replacement_handoff(self):
+        session_id = "session-new"
+        target_session = "new-session"
+        term_id = "term-new-1"
+        with hook_test_env(fake_term_id=term_id) as (root, env, dirs):
+            (dirs["debounce"] / session_id).write_text("123\n🌿 investigate-filesystem-footer\n")
+            (dirs["debounce"] / f"{session_id}.origin").write_text("original prompt")
+            (dirs["terminal"] / session_id).write_text(term_id)
+            with tempfile.TemporaryDirectory() as cwd:
+                result = run_hook(
+                    "session-end-hook.py",
+                    {
+                        "session_id": session_id,
+                        "cwd": cwd,
+                        "shutdown_reason": "new",
+                        "target_session_file": f"/tmp/{target_session}.jsonl",
+                    },
+                    env,
+                )
+
+            assert_hook_ok(self, result)
+            self.assertTrue((dirs["debounce"] / session_id).exists())
+            self.assertTrue((dirs["debounce"] / f"{session_id}.origin").exists())
+            self.assertFalse((dirs["terminal"] / session_id).exists())
+
+            handoff_key = hashlib.sha256(target_session.encode("utf-8")).hexdigest()[:24]
+            handoff = json.loads((dirs["handoff"] / f"replacement-{handoff_key}").read_text())
+            self.assertEqual(handoff["terminal_id"], term_id)
+            self.assertEqual(handoff["title"], "🌿 investigate-filesystem-footer")
+
+            log = read_log(root)
+            self.assertIn("end -> replacement handoff written for Pi new", log)
+            self.assertIn("end -> kept debounce state for Pi replacement", log)
+            self.assertIn("end -> unit + terminal_id released", log)
+
     def test_pi_quit_cleans_debounce_and_releases_terminal(self):
         session_id = "session-quit"
         term_id = "term-quit-1"

@@ -81,7 +81,13 @@ class PiSessionSoundHookTests(unittest.TestCase):
             assert_hook_ok(self, start_result)
             self.assertEqual((dirs["terminal"] / new_session).read_text(), "term-outgoing")
             self.assertEqual((dirs["terminal"] / "other-session").read_text(), "term-focused-other")
-            self.assertIn("new -> restored replacement terminal_id='term-outgoing'", read_log(root))
+            self.assertEqual(
+                (dirs["debounce"] / new_session).read_text(),
+                "0\n🌿 fix-pi-subagent-trust-error",
+            )
+            log = read_log(root)
+            self.assertIn("new -> restored replacement terminal_id='term-outgoing'", log)
+            self.assertIn("new -> restored replacement title '🌿 fix-pi-subagent-trust-error'", log)
 
     def test_resume_without_handoff_or_title_resets_to_folder(self):
         with hook_test_env(fake_term_id="term-resume") as (root, env, dirs):

@@ -43,6 +43,14 @@ def current_clean_title(lines: list[str]) -> str:
     return strip_all_emojis(raw_title)
 
 
+def replacement_handoff_title(raw_title: str, clean_title: str, shutdown_reason: str) -> str:
+    if not clean_title:
+        return ""
+    if shutdown_reason in {"new", "resume"} and raw_title.strip():
+        return raw_title.strip()
+    return f"{EMOJI_WORKING} {clean_title}"
+
+
 lines = read_debounce_lines()
 clean_title = current_clean_title(lines)
 term_id = get_terminal_id(session_id)
@@ -79,7 +87,8 @@ if lifecycle_policy.should_write_fork_handoff(runtime, shutdown_reason, plan_acc
 replacement_flow = lifecycle_policy.is_replacement_shutdown(runtime, shutdown_reason)
 if replacement_flow:
     if term_id and target_session_file:
-        handoff_title = f"{EMOJI_WORKING} {clean_title}" if clean_title else ""
+        raw_title = lines[1] if len(lines) >= 2 else ""
+        handoff_title = replacement_handoff_title(raw_title, clean_title, shutdown_reason)
         if write_replacement_handoff(target_session_file, term_id, handoff_title):
             log(session_id, "session", f"end -> replacement handoff written for Pi {shutdown_reason}")
         else:
