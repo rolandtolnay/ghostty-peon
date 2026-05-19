@@ -37,6 +37,26 @@ function contentToText(content: unknown): string {
 		if (!block || typeof block !== "object") continue;
 		const record = block as Record<string, unknown>;
 		if (record.type === "text" && typeof record.text === "string") parts.push(record.text);
+		const questionText = questionToolCallText(record);
+		if (questionText) parts.push(questionText);
+	}
+	return parts.join("\n");
+}
+
+function questionToolCallText(record: Record<string, unknown>): string {
+	if (record.type !== "toolCall" || typeof record.name !== "string" || !isQuestionToolName(record.name)) return "";
+	const args = record.arguments;
+	if (!args || typeof args !== "object") return "";
+
+	const argRecord = args as Record<string, unknown>;
+	const parts: string[] = [];
+	if (typeof argRecord.question === "string") parts.push(argRecord.question);
+	if (Array.isArray(argRecord.questions)) {
+		for (const item of argRecord.questions) {
+			if (!item || typeof item !== "object") continue;
+			const question = (item as Record<string, unknown>).question;
+			if (typeof question === "string") parts.push(question);
+		}
 	}
 	return parts.join("\n");
 }

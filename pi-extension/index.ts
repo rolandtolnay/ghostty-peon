@@ -109,12 +109,14 @@ export default function (pi: ExtensionAPI) {
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (!isInteractiveGhostty(ctx)) return undefined;
 		const id = sessionId(ctx);
+		const imageCount = Array.isArray(event.images) ? event.images.length : 0;
 		const pending = runHook(
 			"tabtitle-hook.py",
 			{
 				...basePayload(ctx, id),
 				hook_event_name: "UserPromptSubmit",
 				prompt: event.prompt,
+				image_count: imageCount,
 				transcript_path: ctx.sessionManager.getSessionFile() || "",
 			},
 			ctx.cwd,

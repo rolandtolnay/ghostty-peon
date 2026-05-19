@@ -38,6 +38,71 @@ IGNORED_PROMPTS = [
     "/commit-commands:commit",
 ]
 
+FALLBACK_STOPWORDS = {
+    "a",
+    "about",
+    "an",
+    "and",
+    "attached",
+    "bug",
+    "can",
+    "could",
+    "diagnose",
+    "for",
+    "help",
+    "i",
+    "image",
+    "in",
+    "into",
+    "is",
+    "it",
+    "look",
+    "looking",
+    "me",
+    "of",
+    "please",
+    "screenshot",
+    "see",
+    "shown",
+    "shows",
+    "the",
+    "this",
+    "to",
+    "with",
+    "you",
+}
+
+
+def image_count_from_payload(data: dict) -> int:
+    """Return image attachment count without requiring image bytes in hook payloads."""
+    if "image_count" in data:
+        image_count = data.get("image_count", 0)
+        if isinstance(image_count, int):
+            return max(image_count, 0)
+        if isinstance(image_count, str):
+            try:
+                return max(int(image_count), 0)
+            except ValueError:
+                return 0
+    images = data.get("images")
+    if isinstance(images, list):
+        return len(images)
+    return 0
+
+
+def fallback_slug_for_image_prompt(prompt: str) -> str:
+    """Build a conservative title when an image prompt is too contextual for the LLM."""
+    raw_words = prompt.replace("/", " ").replace("_", " ").split()
+    words = ["".join(c for c in token.lower() if c.isalnum()) for token in raw_words]
+    words = [word for word in words if word]
+    bug_words = {"bug", "broken", "crash", "error", "fail", "fails", "failing", "issue"}
+    verb = "debug" if any(word in bug_words for word in words) else "investigate"
+    topic = [word for word in words if word not in FALLBACK_STOPWORDS and not word.isdigit()]
+    if not topic:
+        topic = ["screenshot"]
+    slug = "-".join([verb, *topic[:3]])
+    return slug[:60].rstrip("-")
+
 
 def should_skip(session_id: str, prompt: str) -> str | None:
     """Return a skip reason string, or None to proceed."""
@@ -130,6 +195,7 @@ def generate_slug(
     origin_message: str = "",
     recent_messages: list[str] | None = None,
     session_id: str = "",
+    image_count: int = 0,
 ) -> str | None:
     """Call local Ollama model to generate a tab title slug."""
     system = (
@@ -196,22 +262,16 @@ def generate_slug(
         "  title=old-feature, msg='Do that now for analytics package dependencies' → update-analytics-dependencies\n"
         "  title=old-feature, msg='Unrelated: audit feature flags' → audit-feature-flags\n"
         '\n'
+        'IMAGE ATTACHMENTS: You cannot see attached images. Use only the surrounding text to title the task. If title=none and images are attached, prefer a concrete text-derived slug; if the text has no concrete topic, use investigate-screenshot rather than KEEP.\n'
         'Final rule: With an existing non-none title, choose KEEP unless the topic clearly changed. With title=none and a concrete message, choose a slug.'
     )
 
-    # Build context from conversation history
-    parts = []
-    if origin_message:
-        parts.append(f"<title_origin>{origin_message}</title_origin>")
-    for msg in (recent_messages or []):
-        parts.append(f"<recent_message>{msg}</recent_message>")
-    parts.append(f"<current_message>{prompt[:MAX_MSG_CHARS]}</current_message>")
-    context = "\n".join(parts)
-
-    user_msg = (
-        f"<current_title>{current_title or 'none'}</current_title>\n"
-        f"{context}\n"
-        "Output only the slug:"
+    user_msg = build_llm_user_message(
+        prompt,
+        current_title,
+        origin_message,
+        recent_messages,
+        image_count,
     )
 
     try:
@@ -242,6 +302,34 @@ def generate_slug(
         return None
 
 
+def build_llm_user_message(
+    prompt: str,
+    current_title: str,
+    origin_message: str = "",
+    recent_messages: list[str] | None = None,
+    image_count: int = 0,
+) -> str:
+    """Build the user message for the tab title LLM."""
+    parts = []
+    if origin_message:
+        parts.append(f"<title_origin>{origin_message}</title_origin>")
+    for msg in (recent_messages or []):
+        parts.append(f"<recent_message>{msg}</recent_message>")
+    if image_count:
+        noun = "image" if image_count == 1 else "images"
+        parts.append(
+            f"<attachments>{image_count} {noun} attached; image contents are unavailable to the title generator.</attachments>"
+        )
+    parts.append(f"<current_message>{prompt[:MAX_MSG_CHARS]}</current_message>")
+    context = "\n".join(parts)
+
+    return (
+        f"<current_title>{current_title or 'none'}</current_title>\n"
+        f"{context}\n"
+        "Output only the slug:"
+    )
+
+
 def is_valid_slug(slug: str) -> bool:
     """Reject anything that isn't a clean hyphenated slug."""
     if len(slug) > 60:
@@ -250,7 +338,16 @@ def is_valid_slug(slug: str) -> bool:
         return False
     # Reject common failure text from model/tool wrappers, but allow legitimate
     # topic slugs like "debug-update-tool-error".
-    if slug in {"error", "max-turns", "max-turns-reached", "truncated"}:
+    invalid_exact = {
+        "current-directory",
+        "current-folder",
+        "current-path",
+        "error",
+        "max-turns",
+        "max-turns-reached",
+        "truncated",
+    }
+    if slug in invalid_exact:
         return False
     is_error_prefix = slug.startswith("error-")
     is_simple_error_suffix = slug.endswith("-error") and slug.count("-") == 1
@@ -273,13 +370,15 @@ def main():
     data = json.load(sys.stdin)
     prompt = data.get("prompt", "")
     session_id = data.get("session_id", "unknown")
+    image_count = image_count_from_payload(data)
 
     # Completely ignore certain prompts — no rename, no emoji clear, no side effects
     if prompt.strip() in IGNORED_PROMPTS:
         log(session_id, "tabtitle", f"skip: ignored prompt ({prompt.strip()!r})")
         sys.exit(0)
 
-    log(session_id, "tabtitle", f"prompt={len(prompt)}chars")
+    image_log = f", images={image_count}" if image_count else ""
+    log(session_id, "tabtitle", f"prompt={len(prompt)}chars{image_log}")
 
     # Replace any previous emoji with 🌊 working indicator
     state = title_state.read(session_id)
@@ -313,8 +412,11 @@ def main():
         "tabtitle",
         f"calling llm (current={current_title!r}, origin={len(origin_message)}chars, recent={len(recent_messages)}msgs)",
     )
-    slug = generate_slug(prompt, current_title, origin_message, recent_messages, session_id)
+    slug = generate_slug(prompt, current_title, origin_message, recent_messages, session_id, image_count)
     log(session_id, "tabtitle", f"llm returned {slug!r}")
+    if not slug and not current_title and image_count:
+        slug = fallback_slug_for_image_prompt(prompt)
+        log(session_id, "tabtitle", f"image fallback returned {slug!r}")
 
     now = str(time.time())
     if slug:
