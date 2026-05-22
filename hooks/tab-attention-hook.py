@@ -29,6 +29,7 @@ from sound_utils import (
     log,
     set_attention_emoji,
     set_status_emoji,
+    skip_subagent_payload,
     strip_all_emojis,
 )
 
@@ -73,6 +74,8 @@ def main():
     data = json.load(sys.stdin)
     event = data.get("hook_event_name", "")
     session_id = data.get("session_id", "unknown")
+    if skip_subagent_payload(data, session_id, "attention"):
+        sys.exit(0)
 
     timestamp, raw_title = read_debounce(session_id)
     clean_title = strip_emoji(raw_title)

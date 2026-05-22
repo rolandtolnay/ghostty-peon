@@ -94,6 +94,70 @@ def log(session_id: str, hook: str, message: str) -> None:
         pass
 
 
+SUBAGENT_HOOK_EVENTS = {"SubagentStart", "SubagentStop"}
+NESTED_HOOK_ENV_VAR = "_CLAUDE_HOOK_NESTED"
+
+
+def write_nested_hook_guard_env(session_id: str) -> bool:
+    """Mark future Claude-launched subprocesses so their hooks stay silent.
+
+    Claude exposes CLAUDE_ENV_FILE during SessionStart. Lines appended there are
+    sourced into later Bash commands. If those commands launch nested `claude`
+    processes (the implementation behind some subagents), the child hook
+    processes inherit this marker and exit before touching Ghostty or sounds.
+    """
+    if _namespace() != "claude":
+        return False
+    env_file = os.environ.get("CLAUDE_ENV_FILE", "")
+    if not env_file:
+        return False
+    line = f"export {NESTED_HOOK_ENV_VAR}=1"
+    try:
+        existing = ""
+        try:
+            with open(env_file) as f:
+                existing = f.read()
+        except OSError:
+            pass
+        if line not in existing.splitlines():
+            with open(env_file, "a") as f:
+                if existing and not existing.endswith("\n"):
+                    f.write("\n")
+                f.write(f"{line}\n")
+        log(session_id, "session", f"nested hook guard exported via CLAUDE_ENV_FILE ({NESTED_HOOK_ENV_VAR}=1)")
+        return True
+    except OSError as e:
+        log(session_id, "session", f"nested hook guard export failed: {e}")
+        return False
+
+
+def skip_subagent_payload(data: dict, session_id: str, hook_name: str) -> bool:
+    """Return True after logging when a Claude hook fired inside a subagent.
+
+    Claude Code includes agent_id on regular hook events that fire from inside
+    a subagent, while dedicated subagent lifecycle events use SubagentStart /
+    SubagentStop. Those subagent payloads share the visible parent terminal, so
+    Ghostty Peon must not play sounds, capture terminal ownership, or mutate the
+    parent tab title for them.
+    """
+    agent_id = data.get("agent_id")
+    agent_type = data.get("agent_type")
+    event = data.get("hook_event_name", "")
+    if not agent_id and event not in SUBAGENT_HOOK_EVENTS:
+        return False
+
+    details = []
+    if agent_id:
+        details.append(f"agent_id={agent_id!r}")
+    if agent_type:
+        details.append(f"agent_type={agent_type!r}")
+    if event:
+        details.append(f"event={event!r}")
+    suffix = f" ({', '.join(details)})" if details else ""
+    log(session_id, hook_name, f"skip: subagent{suffix}")
+    return True
+
+
 def _read_last_played(category_key: str) -> str:
     """Read the last played filename for a category. Returns '' on any failure."""
     try:

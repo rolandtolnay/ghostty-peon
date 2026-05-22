@@ -35,6 +35,8 @@ from sound_utils import (
     release_terminal_id,
     save_terminal_id,
     set_tab_title,
+    skip_subagent_payload,
+    write_nested_hook_guard_env,
     _get_session_unit,
     _namespace,
 )
@@ -42,6 +44,9 @@ from sound_utils import (
 data = json.load(sys.stdin)
 source = data.get("source", "")
 session_id = data.get("session_id", "unknown")
+if skip_subagent_payload(data, session_id, "session"):
+    sys.exit(0)
+write_nested_hook_guard_env(session_id)
 cwd = data.get("cwd", "")
 pi_reason = data.get("pi_reason", source)
 session_file = data.get("session_file", "")

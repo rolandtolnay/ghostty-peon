@@ -24,6 +24,7 @@ from sound_utils import (
     log,
     set_attention_emoji,
     set_status_emoji,
+    skip_subagent_payload,
     strip_all_emojis,
 )
 
@@ -89,6 +90,8 @@ def main():
 
     data = json.load(sys.stdin)
     session_id = data.get("session_id", "unknown")
+    if skip_subagent_payload(data, session_id, "stop-q"):
+        sys.exit(0)
 
     # Stop hooks must check this to prevent infinite loops
     if data.get("stop_hook_active"):

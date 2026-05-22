@@ -21,6 +21,7 @@ from sound_utils import (
     release_terminal_id,
     release_unit,
     set_tab_title,
+    skip_subagent_payload,
     strip_all_emojis,
     write_plan_handoff,
     write_replacement_handoff,
@@ -29,6 +30,8 @@ from sound_utils import (
 
 data = json.load(sys.stdin)
 session_id = data.get("session_id", "unknown")
+if skip_subagent_payload(data, session_id, "session"):
+    sys.exit(0)
 cwd = data.get("cwd", "")
 shutdown_reason = data.get("shutdown_reason", "")
 target_session_file = data.get("target_session_file", "")

@@ -26,6 +26,7 @@ from sound_utils import (
     log,
     play_sound,
     set_status_emoji,
+    skip_subagent_payload,
     strip_all_emojis,
 )
 
@@ -370,6 +371,8 @@ def main():
     data = json.load(sys.stdin)
     prompt = data.get("prompt", "")
     session_id = data.get("session_id", "unknown")
+    if skip_subagent_payload(data, session_id, "tabtitle"):
+        sys.exit(0)
     image_count = image_count_from_payload(data)
 
     # Completely ignore certain prompts — no rename, no emoji clear, no side effects
