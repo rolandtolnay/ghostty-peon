@@ -98,7 +98,9 @@ Each terminal session is assigned a unique Warcraft III unit within its project 
 
 Location: `/tmp/claude-tab-hooks.log` (today's log). Previous day's log archived at `/tmp/claude-tab-hooks.prev.log`. Rotates once per day at the first log write after midnight.
 
-All hooks log every code path — including skips, failures, and no-ops. Every exit from every hook produces at least one log line explaining why. If a hook fires and there is **no log line at all**, it means the hook runner itself failed (timeout, crash) before the script executed.
+Most non-early-exit paths log skips, failures, and no-ops with the reason. A total absence of log lines usually means the hook runner did not execute the script, but there are intentional pre-log exits such as `_CLAUDE_HOOK_NESTED=1` and `_CLAUDE_NO_SOUND=1`.
+
+Use `/tmp/pi-tab-hooks.log` for Pi sessions. The two runtimes have separate logs and `/tmp` state namespaces; do not debug a Pi symptom from Claude logs or vice versa.
 
 ### Log Format
 
@@ -110,6 +112,48 @@ HH:MM:SS.mmm [sid] hook       | message
 - `[sid]` — last 6 characters of the full session ID (stable within a session, unique across concurrent sessions)
 - `hook` — left-padded to 10 chars. Values: `session`, `tabtitle`, `attention`, `stop-q`, `plan-accept`, `sound`
 - `message` — free-form, always starts with one of: an action (`startup ->`, `set ->`, `cleared attention ->`), a skip reason (`skip: ...`), a delegation (`calling llm`, `llm ->`), or a failure (`set_tab_title failed`, `llm error`)
+
+### Fast Triage Checklist
+
+Start with the runtime-specific log and state before reading hook code:
+
+```sh
+# Claude Code
+tail -200 /tmp/claude-tab-hooks.log
+ls -lt /tmp/claude-tabtitle /tmp/claude-tabterminal /tmp/claude-sound-session 2>/dev/null
+
+# Pi
+tail -200 /tmp/pi-tab-hooks.log
+ls -lt /tmp/pi-tabtitle /tmp/pi-tabterminal /tmp/pi-sound-session 2>/dev/null
+```
+
+Then identify the `[sid]` suffix and build a one-session trace:
+
+```sh
+grep '\[abc123\]' /tmp/claude-tab-hooks.log
+grep '\[abc123\]' /tmp/pi-tab-hooks.log
+```
+
+Check these high-signal patterns before broader exploration:
+
+```sh
+# Subagent/nested-session suppression
+grep "skip: subagent" /tmp/claude-tab-hooks.log
+grep "nested hook guard exported" /tmp/claude-tab-hooks.log
+grep "subagent detected" /tmp/claude-tab-hooks.log
+
+# Unsafe tab targeting avoided
+grep "target: SKIPPED (no term_id" /tmp/claude-tab-hooks.log /tmp/pi-tab-hooks.log
+
+# Pi replacement handoff correctness
+grep -E "replacement handoff written|restored replacement terminal_id|restored replacement title|captured terminal_id" /tmp/pi-tab-hooks.log
+
+# Question/ready status path
+grep -E "agent_end|stop-q|llm ->|skip: no '\?'|skip 🌿: no established title" /tmp/pi-tab-hooks.log /tmp/claude-tab-hooks.log
+
+# Sound-producing paths
+grep -E "sound +\| session.start|sound +\| task.acknowledge|sound +\| input.required" /tmp/claude-tab-hooks.log /tmp/pi-tab-hooks.log
+```
 
 ### Filtering by Session
 
@@ -171,16 +215,30 @@ Look for `attention` lines:
 - PermissionRequest for either question tool should log `skip: ... handled by PreToolUse`
 - If `PreToolUse` is missing, the question-tool hook/extension mapping may be missing
 
-**Sound not playing:**
+**Sound not playing or playing less often than expected:**
 Look for `sound` lines in the log:
 - `skip session.start: class=none` — sounds disabled via `peon-class none`
 - `skip ...: dir missing (class/unit/event)` — sound files not found
 - `skip ...: invalid class=...` — invalid PEON_SOUND_CLASS value
+- fewer `task.acknowledge` sounds can be expected when tab titles rename less often; `task.acknowledge` only plays on actual new slug generation, not on `KEEP`, same-slug, short prompt, cooldown skip, or invalid slug
 
 Check your sound class setting:
 ```sh
 peon-class          # shows current setting
 ```
+
+If title/sound behavior depends on the LLM, inspect the detailed local-LLM-compatible call log:
+
+```sh
+ls -lh ~/.local/share/local-llm/calls-*.jsonl
+local-llm ./logview --tag tabtitle --last 1h
+local-llm ./logview --tag stop-question --last 1h
+```
+
+Validated caveats from prior debugging:
+- Ollama can be healthy while Ghostty Peon lacks detailed call logs if `client.py` logging is broken; check for the current month file.
+- `ollama serve` plus one `ollama runner` for the warm model is normal. Extra old model runners can waste RAM; `ollama ps` shows loaded models, and `ollama stop gemma4:e4b`/`ollama stop gemma4:e2b` unloads a model.
+- Current hooks use `gemma4:e2b`; previous investigations did not require stop-question prompt retuning for this model.
 
 **Unit assignment issues:**
 Check the assignment files:
@@ -190,10 +248,80 @@ ls -la /tmp/claude-sound-session/         # session index
 cat /tmp/claude-sound-units/*/<session_id>  # shows class\nunit for a session
 ```
 
-**Clearing the log:**
+**Subagents emit sounds or change the focused tab:**
+There are three validated subagent/nested-session paths; check all before assuming a stale install:
+
+1. Claude in-process subagent hook payloads include `agent_id` and may use `hook_event_name=SubagentStart/SubagentStop`; these should log `skip: subagent` and exit before terminal capture, title mutation, unit assignment, sounds, or cleanup.
+2. Bash-launched nested `claude` subprocesses may not include `agent_id`; parent `SessionStart` should write `export _CLAUDE_HOOK_NESTED=1` to `CLAUDE_ENV_FILE`, visible as `nested hook guard exported via CLAUDE_ENV_FILE`.
+3. Older Claude Agent/Task-style subagents created separate sessions on the same Ghostty terminal; terminal ownership detection logs `subagent detected (terminal owned by ...)` and releases the subagent terminal id before sounds/unit assignment.
+
+Suspicious pattern when suppression fails:
+
+```text
+[child] session  | startup -> assigned unit='...'
+[child] sound    | session.start -> ...
+[child] tabtitle | prompt=...chars
+[child] sound    | task.acknowledge -> ...
+```
+
+Useful checks:
+
+```sh
+grep "skip: subagent" /tmp/claude-tab-hooks.log
+grep "nested hook guard exported" /tmp/claude-tab-hooks.log
+grep "subagent detected" /tmp/claude-tab-hooks.log
+grep -E "startup -> assigned unit|sound +\| session.start|task.acknowledge" /tmp/claude-tab-hooks.log
+```
+
+Known gotchas:
+- `agent_type` alone is not a subagent signal; a main `claude --agent <name>` style session must not be skipped just because it has an agent type.
+- Terminal ownership inference can false-positive for legitimate multiple sessions sharing one Ghostty terminal/split pane. Prefer explicit `agent_id`, lifecycle event, `_CLAUDE_HOOK_NESTED`, or Pi `PI_SUBAGENT_CHILD` when available.
+- A hook with `_CLAUDE_HOOK_NESTED=1` exits before normal logging, so no log line from the child process can be expected.
+
+**Pi replacement starts restore the wrong tab or stale status:**
+Known failure modes and expected fixes are all at the lifecycle handoff seam:
+
+- If a Pi `new`/`fork`/`resume` replacement captures the currently focused tab instead of the outgoing tab, look for missing target-session handoff. The bad repro was `term-focused-other != term-outgoing` in `tests/test_session_sound_pi.py`.
+- Expected log sequence: outgoing shutdown writes `replacement handoff written`, then replacement start logs `restored replacement terminal_id=...`. If replacement start logs only `captured terminal_id=...`, it fell back to focus capture.
+- Pi `new` and `resume` should preserve the outgoing visible title/status (`🌿`, `⭐`, `🔥`, or `🌀`). Pi `fork` and plan continuation intentionally hand off `🌀 <clean-title>` because work continues.
+- A prior bug rebuilt every replacement handoff as `🌀 <clean-title>`, which made idle `🌿 investigate-filesystem-footer` sessions look active after `reason=new`.
+
+Useful checks:
+
+```sh
+grep -E "event session_shutdown reason=|replacement handoff written|restored replacement terminal_id|restored replacement title|captured terminal_id" /tmp/pi-tab-hooks.log
+```
+
+**Stop-question / ⭐ vs 🌿 status is wrong:**
+The stop hook is intentionally heuristic:
+
+- It checks only the last 500 chars of `last_assistant_message` for `?` before calling Ollama. A real question earlier than the last 500 chars can be missed.
+- If Pi `agent_end` has `msg_len=0`, the event mapping did not provide extractable assistant text; the tab may remain in its previous state.
+- If there is no established debounce title, `stop-q` logs `skip 🌿: no established title` rather than creating a title from nothing.
+- Pi structured `question`/`AskUserQuestion` tool-call blocks must be projected to user-facing text in `pi-extension/event-mapping.ts`; otherwise `tab-stop-question-hook.py` can miss questions represented outside plain text.
+
+Useful checks:
+
+```sh
+grep -E "agent_end|stop-q|msg_len=0|skip: no '\?'|llm ->|skip 🌿: no established title" /tmp/pi-tab-hooks.log /tmp/claude-tab-hooks.log
+```
+
+**Claude plan acceptance loses emoji/status:**
+Plan acceptance crosses a Claude session boundary. The safe behavior is not merely preserving the raw title:
+
+- `PermissionRequest:ExitPlanMode` can temporarily show `🔥` and mark `planpending`.
+- `SessionEnd` with `planpending` should convert to `🌀 <clean-title>`, set the visible tab, and write a terminal-scoped handoff.
+- The next `SessionStart:clear/startup` should consume that handoff, seed the new session debounce file, and set `🌀 <clean-title>` so later PostToolUse/Stop/attention hooks have state.
+
+If an active post-plan tab has no emoji, check for `planpending`, handoff writes/consumes, and whether the new session has a debounce file.
+
+**Clearing logs/state:**
 ```sh
 > /tmp/claude-tab-hooks.log   # truncate
 rm /tmp/claude-tab-hooks.log  # delete (recreated automatically on next hook fire)
+
+# Clear Claude hook state when reproducing from scratch
+rm -rf /tmp/claude-tabtitle /tmp/claude-tabterminal /tmp/claude-plan-handoff /tmp/claude-sound-units /tmp/claude-sound-session /tmp/claude-sound-last
 ```
 
 ### Inspecting the Debounce File
@@ -218,6 +346,24 @@ ls -lt /tmp/claude-tabtitle/   # most recent file = current session
 Each session's Ghostty terminal UUID is captured at `SessionStart` and persisted to `/tmp/claude-tabterminal/{session_id}`. All hooks use this UUID to target the correct tab via `perform action "set_tab_title:..." on (first terminal whose id is "UUID")`, which works regardless of which tab or window is focused.
 
 If no UUID is available for a session, `set_tab_title()` refuses to operate (logs `SKIPPED: no term_id, refusing unsafe fallback`) to prevent accidentally renaming the wrong tab.
+
+### Validation Commands and Gotchas
+
+Tests use `tests/helpers.py` as a top-level import, so direct module runs need `PYTHONPATH=tests`:
+
+```sh
+PYTHONPATH=tests python3 -m unittest tests.test_session_sound_pi tests.test_session_end_pi
+PYTHONPATH=tests python3 -m unittest tests.test_claude_subagent_guard
+python3 -m unittest discover -s tests
+python3 -m py_compile hooks/*.py
+git diff --check
+```
+
+Known gotchas from prior sessions:
+- `python3 -m unittest` from the repo root discovers 0 tests; use `discover -s tests`.
+- `python3 -m unittest tests.test_session_sound_pi` fails without `PYTHONPATH=tests` because tests import `helpers` as top-level.
+- Raw `tsc`/Node import checks may fail because this repo does not install local TypeScript/Node type dependencies; prefer the existing installer/extension smoke path or `./scripts/check.sh` when present.
+- Do not rely on CI-style Ghostty/Ollama/sound integration tests here. The reliable loop is hook-level contract tests plus manual Ghostty smoke verification when needed.
 
 ---
 
@@ -285,7 +431,11 @@ Pi behavior:
 
 ### Recursion Guard: `_CLAUDE_HOOK_NESTED`
 
-Hooks that fire inside nested `claude` subprocesses would cause recursive execution. All hook scripts check `_CLAUDE_HOOK_NESTED` at the top and exit immediately if set. The env var propagates from parent processes to all hooks they fire.
+Hooks that fire inside nested `claude` subprocesses would cause recursive execution. All hook scripts check `_CLAUDE_HOOK_NESTED` at the top and exit immediately if set. During Claude `SessionStart`, `session-sound-hook.py` appends `export _CLAUDE_HOOK_NESTED=1` to `CLAUDE_ENV_FILE` so later Bash-launched child `claude` processes inherit the marker before their own hooks fire.
+
+### Claude Subagent Guard
+
+Claude Code includes `agent_id` on hook payloads that fire inside a subagent, and uses `SubagentStart` / `SubagentStop` for dedicated subagent lifecycle events. Ghostty Peon skips those payloads before any sound, terminal capture, title mutation, or cleanup because subagent hooks share the visible parent terminal/session state.
 
 ### Sound Deduplication
 
@@ -306,6 +456,34 @@ Sounds are tightly coupled to state changes:
 5. Pick random file from remaining candidates
 6. Fire `afplay` via `subprocess.Popen()` — non-blocking, fire-and-forget
 7. All failures silently caught
+
+### Verifying Claude Install
+
+Claude Code reads hook registrations from `~/.claude/settings.json`. When a fix appears not to take effect, verify the configured commands point at this checkout rather than an old copied path:
+
+```sh
+python3 - <<'PY'
+import json, pathlib
+settings = json.loads(pathlib.Path.home().joinpath('.claude/settings.json').read_text())
+for event, entries in settings.get('hooks', {}).items():
+    for entry in entries:
+        for hook in entry.get('hooks', []):
+            cmd = hook.get('command', '')
+            if 'ghostty-peon' in cmd:
+                print(event, entry.get('matcher', ''), cmd)
+PY
+```
+
+Expected script paths should reference this repository's `hooks/` files. If they point elsewhere, reinstall:
+
+```sh
+node install.js --target claude --yes
+```
+
+After hook changes:
+- Python hook file changes are picked up on the next hook invocation if Claude settings point at this checkout.
+- Changes that depend on `SessionStart` environment propagation, especially `_CLAUDE_HOOK_NESTED` via `CLAUDE_ENV_FILE`, require relaunching Claude Code from a fresh parent session.
+- Existing stale visible titles may need a new prompt/session event or manual state cleanup; code changes do not retroactively repair old `/tmp` state.
 
 ### Claude `settings.json` Hook Registration
 
@@ -380,6 +558,8 @@ Pi uses a separate runtime namespace from Claude Code:
 
 Pi runner log lines include lifecycle metadata such as `event session_start reason=...`, `event session_shutdown reason=...`, `event session_before_fork`, and `event session_compact`. Use these with the session suffix to distinguish normal startup, trust/new-session flows, fork replacement, resume, and compaction. For replacement flows, look for `replacement handoff written` on shutdown followed by `restored replacement terminal_id=...` on the new session; if the start falls back to `captured terminal_id=...`, there was no usable target-session handoff.
 
+Pi subagent children should not run Ghostty Peon hooks at all. The extension-level interactive check rejects `PI_SUBAGENT_CHILD=1` before event paths run, even if a future subagent process has a TTY.
+
 Claude Code continues to use `/tmp/claude-*` paths and `~/.ghostty-peon/weights.json`.
 
 ### Pi Sound Class Lookup
@@ -439,6 +619,11 @@ Expected:
 - `src` points to this repository's `pi-extension/` directory.
 - `repo` points to this repository checkout.
 - `/tmp/pi-tab-hooks.log` receives `runner` and hook log lines after Pi events.
+
+After Pi extension changes:
+- Run `/reload` in Pi or restart Pi for TypeScript extension changes under `pi-extension/`.
+- Python hook changes are picked up by the next hook subprocess if the installed `repo` symlink points at this checkout.
+- Reinstall only when the managed shim/install layout changes, or when symlink verification fails.
 
 To clear Pi logs/state during debugging:
 

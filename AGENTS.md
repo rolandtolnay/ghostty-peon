@@ -39,7 +39,7 @@ Manual verification: install the target (`node install.js --target claude|pi --y
 3. Attention emojis appear on questions/permissions
 4. Tab resets to folder name on session end
 
-See `docs/debugging.md` for log inspection and troubleshooting.
+When debugging issues, always consult `docs/debugging.md` for log inspection and troubleshooting guidance before changing hook behavior.
 
 ## Dependencies
 
