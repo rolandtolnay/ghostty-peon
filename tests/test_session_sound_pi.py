@@ -126,6 +126,28 @@ class PiSessionSoundHookTests(unittest.TestCase):
             self.assertEqual((dirs["terminal"] / "compact-session").read_text(), "term-compact")
             self.assertIn("restored existing title '🌀 existing-title'", read_log(root))
 
+    def test_compact_keeps_existing_terminal_when_other_tab_is_focused(self):
+        with hook_test_env(fake_term_id="term-focused-other") as (root, env, dirs):
+            (dirs["terminal"] / "compact-session").write_text("term-existing")
+            (dirs["terminal"] / "other-session").write_text("term-focused-other")
+            (dirs["debounce"] / "compact-session").write_text("123\n🌿 review-skill-execution")
+
+            result = run_hook(
+                "session-sound-hook.py",
+                {
+                    "session_id": "compact-session",
+                    "cwd": str(root / "project"),
+                    "source": "compact",
+                    "pi_reason": "compact",
+                },
+                env,
+            )
+
+            assert_hook_ok(self, result)
+            self.assertEqual((dirs["terminal"] / "compact-session").read_text(), "term-existing")
+            self.assertEqual((dirs["terminal"] / "other-session").read_text(), "term-focused-other")
+            self.assertIn("restored existing title '🌿 review-skill-execution'", read_log(root))
+
 
 if __name__ == "__main__":
     unittest.main()

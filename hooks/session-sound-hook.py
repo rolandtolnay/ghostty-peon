@@ -4,7 +4,7 @@
 Pi is treated as the primary lifecycle model:
 - startup/new/fork: capture the Ghostty terminal, assign a unit, play start sound
 - resume: capture terminal, restore existing title state, assign unit if needed
-- compact: re-capture terminal and restore the existing title after compaction
+- compact: preserve the session terminal and restore the existing title after compaction
 - clear: legacy Claude-style clear support
 """
 
@@ -29,6 +29,7 @@ from sound_utils import (
     clear_terminal_owner,
     consume_plan_handoff,
     consume_replacement_handoff,
+    get_terminal_id,
     is_terminal_owned,
     log,
     play_sound,
@@ -203,7 +204,11 @@ elif source == "resume":
     else:
         log(session_id, "session", f"resume -> existing unit={existing[1]!r}")
 elif source == "compact":
-    capture_and_claim("compact", replace_existing_owner=lifecycle_policy.start_replaces_terminal_owner(runtime, source))
+    term_id = get_terminal_id(session_id)
+    if term_id:
+        log(session_id, "session", f"compact -> keeping existing terminal_id={term_id!r}")
+    else:
+        capture_and_claim("compact", replace_existing_owner=lifecycle_policy.start_replaces_terminal_owner(runtime, source))
     if not restore_existing_title():
         log(session_id, "session", "compact -> no existing title to restore")
 else:

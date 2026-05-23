@@ -23,7 +23,7 @@ Claude settings.json hooks or Pi extension events
     ├─ SessionStart / Pi session_start
     │    ├─ startup/new/fork ────────► session-sound-hook.py ──► capture/claim terminal + assign unit + session.start sound
     │    ├─ resume ─────────────────► session-sound-hook.py ──► capture/claim terminal + restore title + assign unit if needed
-    │    ├─ compact ────────────────► session-sound-hook.py ──► re-capture terminal + restore title
+    │    ├─ compact ────────────────► session-sound-hook.py ──► keep existing terminal + restore title
     │    └─ clear ──────────────────► session-sound-hook.py ──► delete debounce + re-assign unit
     │
     └─ SessionEnd / Pi session_shutdown ─► session-end-hook.py ──► reset/preserve/handoff title state + release unit/terminal
@@ -403,7 +403,7 @@ Tier 2 heuristic for detecting when Claude stops with a question.
 Handles Pi-first lifecycle `source` values:
 - `startup` / `new` / `fork`: captures terminal UUID, claims terminal ownership, assigns unit via `assign_unit()`, plays `session.start`; `new` restores the outgoing visible title/status when a replacement handoff exists
 - `resume`: captures terminal UUID, restores the replacement or persisted title if present, assigns unit only if no existing assignment
-- `compact`: re-captures terminal UUID and restores the persisted title after compaction
+- `compact`: keeps the persisted terminal UUID when present and restores the persisted title after compaction; captures only if the session has no terminal UUID
 - `clear`: legacy Claude-style clear support; deletes debounce file, re-captures UUID, re-assigns unit
 
 In the Pi namespace, explicit replacement flows (`new`, `fork`, `resume`, `compact`) may replace a stale terminal owner. Plain `startup` keeps the nested-session/subagent protection behavior so a nested Pi process does not steal the parent tab title.
@@ -534,7 +534,7 @@ Pi does not use Claude Code's `settings.json` hook system. The Pi extension maps
 | `agent_end` | `tab-stop-question-hook.py` | uses Claude-like `Stop` payload |
 | `session_before_fork` | runner log only | records fork intent before replacement |
 | `session_before_compact` | runner log only | records compaction intent and token count when available |
-| `session_compact` | `session-sound-hook.py` | re-captures terminal id and restores existing title after compaction |
+| `session_compact` | `session-sound-hook.py` | preserves the session terminal id and restores existing title after compaction; captures only if missing |
 | `ghostty-peon:permission` | `tab-attention-hook.py` | optional event bus integration for 🔥 |
 
 The extension runs only in interactive Ghostty sessions so non-interactive Pi runs do not play sounds or attempt AppleScript tab changes.
