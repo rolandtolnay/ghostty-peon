@@ -109,7 +109,8 @@ def main():
     clean_title = strip_emoji(raw_title)
 
     if not last_text:
-        log(session_id, "stop-q", "skip: no last_assistant_message in stop data")
+        log(session_id, "stop-q", "no last_assistant_message in stop data -> ready")
+        _set_ready(session_id, clean_title, timestamp)
         sys.exit(0)
 
     # Pre-filter: only call LLM if '?' appears in the last 500 chars

@@ -24,6 +24,7 @@ import {
 
 const PERMISSION_CHANNEL = "ghostty-peon:permission";
 const pendingTabtitleBySession = new Map<string, Promise<HookResult>>();
+const pendingToolResultBySession = new Map<string, Promise<HookResult>>();
 
 function handlePermissionEvent(data: unknown) {
 	const event = data as PermissionEvent;
@@ -150,7 +151,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("tool_result", async (event: ToolResultEvent, ctx) => {
 		if (!isInteractiveGhostty(ctx)) return undefined;
 		const id = sessionId(ctx);
-		void runHook(
+		const pending = runHook(
 			"tab-attention-hook.py",
 			{
 				...basePayload(ctx, id),
@@ -161,14 +162,22 @@ export default function (pi: ExtensionAPI) {
 			id,
 			{ timeoutMs: FAST_HOOK_TIMEOUT_MS },
 		);
+		pendingToolResultBySession.set(id, pending);
+		try {
+			await pending;
+		} finally {
+			if (pendingToolResultBySession.get(id) === pending) pendingToolResultBySession.delete(id);
+		}
 		return undefined;
 	});
 
 	pi.on("agent_end", async (event, ctx) => {
 		if (!isInteractiveGhostty(ctx)) return undefined;
 		const id = sessionId(ctx);
-		const pending = pendingTabtitleBySession.get(id);
-		if (pending) await waitBriefly(pending, TABTITLE_BARRIER_MS);
+		const pendingTabtitle = pendingTabtitleBySession.get(id);
+		if (pendingTabtitle) await waitBriefly(pendingTabtitle, TABTITLE_BARRIER_MS);
+		const pendingToolResult = pendingToolResultBySession.get(id);
+		if (pendingToolResult) await waitBriefly(pendingToolResult, FAST_HOOK_TIMEOUT_MS);
 
 		await runHook(
 			"tab-stop-question-hook.py",

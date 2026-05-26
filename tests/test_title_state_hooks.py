@@ -44,6 +44,54 @@ class TitleStateHookRegressionTests(unittest.TestCase):
             assert_hook_ok(self, result)
             self.assertEqual((dirs["debounce"] / session_id).read_text(), "456\n🌿 fix-tabs")
 
+    def test_stop_without_assistant_message_sets_ready(self):
+        with hook_test_env() as (_root, env, dirs):
+            session_id = "session-empty-stop"
+            (dirs["debounce"] / session_id).write_text("654\n🌀 fix-tabs")
+            (dirs["terminal"] / session_id).write_text("term-test-1")
+
+            result = run_hook(
+                "tab-stop-question-hook.py",
+                {
+                    "session_id": session_id,
+                    "hook_event_name": "Stop",
+                    "last_assistant_message": "",
+                },
+                env,
+            )
+
+            assert_hook_ok(self, result)
+            self.assertEqual((dirs["debounce"] / session_id).read_text(), "654\n🌿 fix-tabs")
+
+    def test_completed_question_result_then_empty_stop_sets_ready(self):
+        with hook_test_env() as (_root, env, dirs):
+            session_id = "session-question-done"
+            (dirs["debounce"] / session_id).write_text("777\n⭐ remove-lines-preview")
+            (dirs["terminal"] / session_id).write_text("term-test-1")
+
+            question_result = run_hook(
+                "tab-attention-hook.py",
+                {
+                    "session_id": session_id,
+                    "hook_event_name": "PostToolUse",
+                    "tool_name": "question",
+                },
+                env,
+            )
+            stop_result = run_hook(
+                "tab-stop-question-hook.py",
+                {
+                    "session_id": session_id,
+                    "hook_event_name": "Stop",
+                    "last_assistant_message": "",
+                },
+                env,
+            )
+
+            assert_hook_ok(self, question_result)
+            assert_hook_ok(self, stop_result)
+            self.assertEqual((dirs["debounce"] / session_id).read_text(), "777\n🌿 remove-lines-preview")
+
     def test_non_question_tool_result_recovers_stale_ready_to_working(self):
         with hook_test_env() as (_root, env, dirs):
             session_id = "session-stale-ready"

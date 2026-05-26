@@ -21,12 +21,23 @@ export function basePayload(ctx: ExtensionContext, id = sessionId(ctx)) {
 }
 
 export function extractAssistantText(event: AgentEndEvent) {
-	for (let i = event.messages.length - 1; i >= 0; i--) {
+	const lastToolResultIndex = lastMessageIndex(event.messages, "toolResult");
+	const startIndex = lastToolResultIndex >= 0 ? lastToolResultIndex + 1 : 0;
+
+	for (let i = event.messages.length - 1; i >= startIndex; i--) {
 		const message = event.messages[i] as { role?: string; content?: unknown };
 		if (message.role !== "assistant") continue;
 		return contentToText(message.content).trim();
 	}
 	return "";
+}
+
+function lastMessageIndex(messages: unknown[], role: string) {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i] as { role?: string } | undefined;
+		if (message?.role === role) return i;
+	}
+	return -1;
 }
 
 function contentToText(content: unknown): string {

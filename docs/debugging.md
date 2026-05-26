@@ -296,7 +296,7 @@ grep -E "event session_shutdown reason=|replacement handoff written|restored rep
 The stop hook is intentionally heuristic:
 
 - It checks only the last 500 chars of `last_assistant_message` for `?` before calling Ollama. A real question earlier than the last 500 chars can be missed.
-- If Pi `agent_end` has `msg_len=0`, the event mapping did not provide extractable assistant text; the tab may remain in its previous state.
+- If Pi `agent_end` has `msg_len=0`, the event mapping did not provide extractable assistant text; current hooks treat this as ready (`🌿`) because `agent_end` still means the turn finished. Later tool results recover `🌿` back to `🌀` if work unexpectedly continues.
 - If there is no established debounce title, `stop-q` logs `skip 🌿: no established title` rather than creating a title from nothing.
 - Pi structured `question`/`AskUserQuestion` tool-call blocks must be projected to user-facing text in `pi-extension/event-mapping.ts`; otherwise `tab-stop-question-hook.py` can miss questions represented outside plain text.
 
