@@ -9,7 +9,8 @@ Open-time signals:
 
 Clear-time signals:
 - PostToolUse:AskUserQuestion/question -> clear any attention emoji, restore EMOJI_WORKING
-- PostToolUse:*                        -> clear EMOJI_BLOCKED only (permission was accepted)
+- PostToolUse:*                        -> clear EMOJI_BLOCKED (permission accepted)
+- PostToolUse:* while READY            -> recover EMOJI_WORKING (tool activity continued)
 
 The emoji is also stripped by the UserPromptSubmit hook (tabtitle-hook.py)
 when the user sends their next message.
@@ -25,6 +26,7 @@ from sound_utils import (
     ALL_EMOJIS,
     EMOJI_BLOCKED,
     EMOJI_QUESTION,
+    EMOJI_READY,
     EMOJI_WORKING,
     log,
     set_attention_emoji,
@@ -117,16 +119,22 @@ def main():
             log(session_id, "attention", "skip: no emoji to clear")
             sys.exit(0)
         # Question tools clear any attention emoji (⭐ or 🔥)
-        # Other tools only clear 🔥 (means permission was accepted)
-        if not is_question_tool(tool) and not raw_title.startswith(f"{EMOJI_BLOCKED} "):
-            log(session_id, "attention", f"skip: non-question tool, emoji is not {EMOJI_BLOCKED}")
+        # Other tools clear 🔥 (permission accepted) and recover stale 🌿 when
+        # a tool result proves the agent continued after an agent_end/ready event.
+        recovered_ready = raw_title.startswith(f"{EMOJI_READY} ")
+        if not is_question_tool(tool) and not raw_title.startswith(f"{EMOJI_BLOCKED} ") and not recovered_ready:
+            log(session_id, "attention", f"skip: non-question tool, emoji is neither {EMOJI_BLOCKED} nor {EMOJI_READY}")
             sys.exit(0)
         if not clean_title:
             log(session_id, "attention", "skip: no established title to restore")
             sys.exit(0)
-        # Restore 🌀 working emoji — Claude is still processing after permission accepted
+        # Restore 🌀 working emoji — Claude/Pi is still processing after permission
+        # accepted, question answered, or a stale ready state was contradicted by tool activity.
         set_status_emoji(session_id, EMOJI_WORKING, clean_title, timestamp, "attention")
-        log(session_id, "attention", f"cleared attention -> {EMOJI_WORKING} {clean_title!r}")
+        if recovered_ready:
+            log(session_id, "attention", f"recovered ready -> {EMOJI_WORKING} {clean_title!r}")
+        else:
+            log(session_id, "attention", f"cleared attention -> {EMOJI_WORKING} {clean_title!r}")
         sys.exit(0)
     else:
         log(session_id, "attention", f"skip: unhandled event={event!r}")
