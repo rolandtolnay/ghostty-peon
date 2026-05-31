@@ -14,8 +14,10 @@ and ignores short prompts (< 40 chars) that are unlikely to shift topic.
 The first user message in a session always triggers a rename.
 """
 
+from dataclasses import dataclass
 import json
 import os
+import socket
 import sys
 import time
 
@@ -33,6 +35,8 @@ from sound_utils import (
 COOLDOWN_SECONDS = 90
 MIN_PROMPT_LENGTH = 40
 MAX_MSG_CHARS = 3000
+FALLBACK_WORKING_TITLE = "working"
+FALLBACK_RETRY_TIMESTAMP = "0"
 
 # Prompts to completely ignore — no rename, no history, no side effects.
 IGNORED_PROMPTS = [
@@ -105,6 +109,31 @@ def fallback_slug_for_image_prompt(prompt: str) -> str:
     return slug[:60].rstrip("-")
 
 
+def fallback_title_for_cwd(cwd: str) -> str:
+    """Return a cheap distinguishable fallback title for a project directory."""
+    folder = os.path.basename(os.path.abspath(cwd or os.getcwd()))
+    return folder or FALLBACK_WORKING_TITLE
+
+
+def is_retryable_fallback_state(state: title_state.TitleState) -> bool:
+    """Return True when a title was seeded only as a retryable fallback."""
+    return state.timestamp == FALLBACK_RETRY_TIMESTAMP and bool(strip_all_emojis(state.title).strip())
+
+
+def semantic_title_for_llm(state: title_state.TitleState) -> str:
+    """Treat retryable fallback titles as no real title for slug generation."""
+    if is_retryable_fallback_state(state):
+        return ""
+    return strip_all_emojis(state.title).strip()
+
+
+def has_established_title(session_id: str) -> bool:
+    """Return True only when debounce state has a real, non-fallback title."""
+    state = title_state.read(session_id)
+    clean_title = strip_all_emojis(state.title).strip()
+    return bool(clean_title) and not is_retryable_fallback_state(state)
+
+
 def should_skip(session_id: str, prompt: str) -> str | None:
     """Return a skip reason string, or None to proceed."""
     # First message always triggers (no debounce file yet)
@@ -114,6 +143,12 @@ def should_skip(session_id: str, prompt: str) -> str | None:
     # Short prompts never trigger (after the first message)
     if len(prompt.strip()) < MIN_PROMPT_LENGTH:
         return f"prompt too short ({len(prompt.strip())} < {MIN_PROMPT_LENGTH} chars)"
+
+    # If the session still only has an empty/fallback title, keep retrying on
+    # substantive prompts instead of letting a failed LLM call trap the tab with
+    # no useful state for the attention/ready emoji hooks.
+    if not has_established_title(session_id):
+        return None
 
     # Check cooldown
     try:
@@ -190,15 +225,26 @@ def get_recent_user_messages(
     return user_messages[-count:] if user_messages else []
 
 
-def generate_slug(
+@dataclass(frozen=True)
+class SlugGenerationResult:
+    slug: str | None = None
+    timed_out: bool = False
+
+
+def is_timeout_error(error: Exception) -> bool:
+    """Return True for urllib/socket timeout failures from the local LLM call."""
+    return isinstance(error, (TimeoutError, socket.timeout)) or "timed out" in str(error).lower()
+
+
+def generate_slug_result(
     prompt: str,
     current_title: str,
     origin_message: str = "",
     recent_messages: list[str] | None = None,
     session_id: str = "",
     image_count: int = 0,
-) -> str | None:
-    """Call local Ollama model to generate a tab title slug."""
+) -> SlugGenerationResult:
+    """Call local Ollama model to generate a tab title slug with failure status."""
     system = (
         'You label terminal tabs so a developer can find the right coding session at a glance.\n'
         'Output either KEEP or a lowercase hyphenated slug, usually 2-5 words.\n'
@@ -291,16 +337,35 @@ def generate_slug(
         slug = raw.strip().strip('"').strip("`").lower()
         if not slug:
             log(session_id, "tabtitle", "slug empty after strip")
-            return None
+            return SlugGenerationResult()
         if slug == "keep":
-            return None
+            return SlugGenerationResult()
         if not is_valid_slug(slug):
             log(session_id, "tabtitle", f"slug failed validation: {slug!r}")
-            return None
-        return slug
+            return SlugGenerationResult()
+        return SlugGenerationResult(slug=slug)
     except Exception as e:
         log(session_id, "tabtitle", f"llm error: {e}")
-        return None
+        return SlugGenerationResult(timed_out=is_timeout_error(e))
+
+
+def generate_slug(
+    prompt: str,
+    current_title: str,
+    origin_message: str = "",
+    recent_messages: list[str] | None = None,
+    session_id: str = "",
+    image_count: int = 0,
+) -> str | None:
+    """Call local Ollama model to generate a tab title slug."""
+    return generate_slug_result(
+        prompt,
+        current_title,
+        origin_message,
+        recent_messages,
+        session_id,
+        image_count,
+    ).slug
 
 
 def build_llm_user_message(
@@ -328,6 +393,19 @@ def build_llm_user_message(
         f"<current_title>{current_title or 'none'}</current_title>\n"
         f"{context}\n"
         "Output only the slug:"
+    )
+
+
+def set_fallback_working_title(session_id: str, cwd: str = "") -> bool:
+    """Seed a visible, retryable title when slug generation fails initially."""
+    fallback_title = fallback_title_for_cwd(cwd)
+    log(session_id, "tabtitle", f"-> {EMOJI_WORKING} fallback ({fallback_title!r})")
+    return set_status_emoji(
+        session_id,
+        EMOJI_WORKING,
+        fallback_title,
+        FALLBACK_RETRY_TIMESTAMP,
+        "tabtitle",
     )
 
 
@@ -386,6 +464,7 @@ def main():
     # Replace any previous emoji with 🌊 working indicator
     state = title_state.read(session_id)
     current_title = strip_emoji(state.title)
+    semantic_current_title = semantic_title_for_llm(state)
     current_timestamp = state.timestamp
     if current_title:
         log(session_id, "tabtitle", f"-> {EMOJI_WORKING} working ({current_title!r})")
@@ -413,9 +492,17 @@ def main():
     log(
         session_id,
         "tabtitle",
-        f"calling llm (current={current_title!r}, origin={len(origin_message)}chars, recent={len(recent_messages)}msgs)",
+        f"calling llm (current={semantic_current_title!r}, origin={len(origin_message)}chars, recent={len(recent_messages)}msgs)",
     )
-    slug = generate_slug(prompt, current_title, origin_message, recent_messages, session_id, image_count)
+    slug_result = generate_slug_result(
+        prompt,
+        semantic_current_title,
+        origin_message,
+        recent_messages,
+        session_id,
+        image_count,
+    )
+    slug = slug_result.slug
     log(session_id, "tabtitle", f"llm returned {slug!r}")
     if not slug and not current_title and image_count:
         slug = fallback_slug_for_image_prompt(prompt)
@@ -440,11 +527,16 @@ def main():
             # No rename — keep working emoji, preserve original timestamp (no cooldown reset)
             set_status_emoji(session_id, EMOJI_WORKING, current_title, current_timestamp, "tabtitle")
         else:
-            # First message, no title yet — just write timestamp
-            try:
-                title_state.write(session_id, now, "")
-            except OSError as e:
-                log(session_id, "tabtitle", f"debounce write failed: {e}")
+            # First message, no semantic title yet — keep a visible working title
+            # with timestamp 0 so the next substantive prompt retries immediately
+            # instead of being blocked by cooldown.
+            if slug_result.timed_out:
+                set_fallback_working_title(session_id, data.get("cwd", ""))
+            else:
+                try:
+                    title_state.write(session_id, now, "")
+                except OSError as e:
+                    log(session_id, "tabtitle", f"debounce write failed: {e}")
         if is_first_message:
             title_state.write_origin(session_id, prompt, max_chars=MAX_MSG_CHARS)
         log(session_id, "tabtitle", "no rename, cooldown not reset")
