@@ -293,7 +293,7 @@ def generate_slug_result(
         "  title=none, msg='Plan the Mindsystem roadmap and phases' → plan-mindsystem-work-breakdown\n"
         "  title=none, msg='/ms:adhoc Fix Tax Rate Creation from Drawers' → fix-tax-rate-drawer-modal\n"
         "  title=none, msg='Block payout creation when there is no bank account' → block-payout-scheduling-no-eba\n"
-        "  title=none, msg='I want to evaluate which Ollama models could replace Qwen' → evaluate-ollama-qwen-replacement\n"
+        "  title=none, msg='Evaluate whether TOON is a better output format' → evaluate-toon-output-format\n"
         "  title=fix-auth-token, msg='Now work on the CSV export' → add-csv-export\n"
         "  title=refactor-cache, msg='Check the deploy pipeline' → debug-deploy-pipeline\n"
         "  title=create-branch, msg='The create-pr script path is wrong' → fix-pr-script-path\n"
