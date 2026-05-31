@@ -49,7 +49,7 @@ Claude settings.json hooks or Pi extension events
 | `pi-extension/ghostty-env.ts` | Pi Ghostty detection and hook subprocess environment construction |
 | `pi-extension/hook-runner.ts` | Python hook subprocess runner, timeout handling, runner logging |
 | `pi-extension/paths.ts` | Pi extension path resolution and required hook list |
-| `client.py` | Standalone Ollama HTTP client (pure stdlib, no pip deps) |
+| `client.py` | Standalone Ollama HTTP client (pure stdlib, no pip deps) with optional local-llm scheduler delegation |
 
 ---
 
@@ -233,7 +233,18 @@ If title/sound behavior depends on the LLM, inspect the detailed local-LLM-compa
 ls -lh ~/.local/share/local-llm/calls-*.jsonl
 local-llm ./logview --tag tabtitle --last 1h
 local-llm ./logview --tag stop-question --last 1h
+local-llm ./logview --priority high --last 1h
 ```
+
+Optional local-llm scheduler delegation is enabled only when configured:
+
+```sh
+export GHOSTTY_PEON_LOCAL_LLM_CLIENT=/Users/rolandtolnay/Documents/Development/local-llm/client.py
+# or
+export GHOSTTY_PEON_LOCAL_LLM_WRAPPER=/Users/rolandtolnay/Documents/Development/local-llm/llm
+```
+
+When configured, `tabtitle` and `stop-question` calls use local-llm with high priority. If local-llm is missing, exits nonzero, or times out, Ghostty Peon logs `local-llm delegation failed; falling back` and uses its bundled direct Ollama client instead.
 
 Validated caveats from prior debugging:
 - Ollama can be healthy while Ghostty Peon lacks detailed call logs if `client.py` logging is broken; check for the current month file.
