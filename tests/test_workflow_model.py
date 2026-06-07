@@ -77,7 +77,6 @@ class WorkflowModelTests(unittest.TestCase):
         decision = workflow_model.decide(
             workflow_model.WorkflowContext(
                 transition="check",
-                first_user_message=True,
                 prompt="Can you sanity check MIN-180?",
             )
         )

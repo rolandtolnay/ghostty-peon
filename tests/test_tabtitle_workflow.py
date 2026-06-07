@@ -170,6 +170,50 @@ class TabtitleWorkflowHookTests(unittest.TestCase):
             self.assertEqual((dirs["debounce"] / "session-ordinary").read_text().splitlines()[1], "🌀 ordinary-pi-title")
             self.assertEqual(call_tags(calls), ["workflow-transition", "tabtitle"])
 
+    def test_ordinary_pi_title_with_workflow_prefix_does_not_enter_canonical_mode(self):
+        with hook_test_env() as (root, env, dirs):
+            calls = install_fake_llm(root, env, transition="COOK", slug="ordinary-followup-title")
+            (dirs["terminal"] / "session-prefix").write_text("term-test-1")
+            (dirs["debounce"] / "session-prefix").write_text("123\n🌀 plan-invite-flow")
+
+            result = run_hook(
+                "tabtitle-hook.py",
+                {
+                    "session_id": "session-prefix",
+                    "cwd": str(root / "project"),
+                    "hook_event_name": "UserPromptSubmit",
+                    "prompt": "Implement the current plan details after checking the latest notes.",
+                    "selected_skills": [],
+                },
+                env,
+            )
+
+            assert_hook_ok(self, result)
+            self.assertEqual((dirs["debounce"] / "session-prefix").read_text().splitlines()[1], "🌀 ordinary-followup-title")
+            self.assertEqual(call_tags(calls), ["tabtitle"])
+            self.assertNotIn("workflow ->", read_log(root))
+
+    def test_review_skill_envelope_wins_over_loaded_cook_skill_metadata(self):
+        with hook_test_env() as (root, env, dirs):
+            install_fake_llm(root, env, transition="NONE", slug="review-linear-skill-changes")
+            (dirs["terminal"] / "session-review").write_text("term-test-1")
+
+            result = run_hook(
+                "tabtitle-hook.py",
+                {
+                    "session_id": "session-review",
+                    "cwd": str(root / "project"),
+                    "hook_event_name": "UserPromptSubmit",
+                    "prompt": '<skill name="review" location="/tmp/review/SKILL.md">Review the branch</skill>',
+                    "selected_skills": ["review"],
+                },
+                env,
+            )
+
+            assert_hook_ok(self, result)
+            self.assertEqual((dirs["debounce"] / "session-review").read_text().splitlines()[1], "🌀 review-review-linear-skill-changes")
+            self.assertIn("workflow -> 🌀 renamed ('review-review-linear-skill-changes')", read_log(root))
+
     def test_claude_payload_ignores_workflow_skills_and_uses_ordinary_slug_flow(self):
         with hook_test_env(namespace="claude") as (root, env, dirs):
             calls = install_fake_llm(root, env, transition="CHECK", slug="ordinary-claude-title")

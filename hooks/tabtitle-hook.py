@@ -617,7 +617,9 @@ def maybe_apply_canonical_workflow(
     selected_skills = selected_skills_from_payload(data)
     if cook_metadata and "cook-plan" not in selected_skills:
         selected_skills = (*selected_skills, "cook-plan")
+    signal_state = workflow_model.deterministic_state(selected_skills)
     artifact_candidates = workflow_artifact_candidates(data, prompt, cook_metadata)
+    has_explicit_signal = bool(signal_state or artifact_candidates)
     term_id = get_terminal_id(session_id) or ""
     resolved = workflow_state.resolve(
         session_id=session_id,
@@ -626,14 +628,18 @@ def maybe_apply_canonical_workflow(
     )
 
     title_state_name, title_slug = canonical_slug_from_title(current_title)
-    current_workflow_state = resolved.state if resolved else title_state_name
-    inherited_slug = (resolved.slug if resolved else "") or title_slug or semantic_current_title
     active_binding = bool(
         resolved
         and (
             session_id in resolved.active_sessions
             or (term_id and term_id in resolved.active_terminals)
         )
+    )
+    current_workflow_state = resolved.state if resolved else (title_state_name if has_explicit_signal else "")
+    inherited_slug = (
+        (resolved.slug if resolved else "")
+        or (title_slug if title_slug and (resolved or has_explicit_signal) else "")
+        or semantic_current_title
     )
     artifact_binding_slug = resolved.slug if resolved and artifact_candidates else ""
 
@@ -650,13 +656,12 @@ def maybe_apply_canonical_workflow(
     decision = workflow_model.decide(
         workflow_model.WorkflowContext(
             current_state=current_workflow_state,
-            prompt=prompt,
+            prompt="",
             selected_skills=selected_skills,
             artifact_candidates=tuple(artifact_candidates),
             branch_name=data.get("branch_name", "") if isinstance(data.get("branch_name"), str) else "",
             inherited_slug=inherited_slug,
             transition=transition,
-            first_user_message=is_first_message,
             active_binding=active_binding,
             artifact_binding_slug=artifact_binding_slug,
         )

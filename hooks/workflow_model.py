@@ -69,7 +69,6 @@ class WorkflowContext:
     branch_name: str = ""
     inherited_slug: str = ""
     transition: str = ""
-    first_user_message: bool = False
     active_binding: bool = False
     artifact_binding_slug: str = ""
 
