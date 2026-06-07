@@ -89,19 +89,18 @@ class EventMappingTests(unittest.TestCase):
 
         self.assertEqual(json.loads(self.run_node(script)), "")
 
-    def test_selected_skill_names_are_normalized_for_tabtitle_payload(self):
+    def test_selected_skill_names_use_invoked_skill_envelope_not_loaded_skills(self):
         script = textwrap.dedent(
             """
             import { selectedSkillNames } from './pi-extension/event-mapping.ts';
 
             const names = selectedSkillNames({
+              prompt: '<skill name="Review" location="/tmp/review/SKILL.md">\\nreview these changes\\n</skill>',
               systemPromptOptions: {
                 skills: [
-                  { name: 'Plan-Quick' },
-                  { name: '/Cook-Plan' },
-                  { name: ' review-hard ' },
-                  { description: 'missing name' },
-                  null,
+                  { name: 'Cook' },
+                  { name: 'Plan' },
+                  { name: 'Review' },
                 ]
               }
             });
@@ -110,7 +109,25 @@ class EventMappingTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(json.loads(self.run_node(script)), ["plan-quick", "cook-plan", "review-hard"])
+        self.assertEqual(json.loads(self.run_node(script)), ["review"])
+
+    def test_selected_skill_names_include_slash_and_bracket_invocations(self):
+        script = textwrap.dedent(
+            """
+            import { selectedSkillNames } from './pi-extension/event-mapping.ts';
+
+            console.log(JSON.stringify({
+              slash: selectedSkillNames({ prompt: '/review-hard audit the branch' }),
+              bracket: selectedSkillNames({ prompt: '[/plan-quick] summarize the change' }),
+              lifecycle: selectedSkillNames({ prompt: '/reload' }),
+            }));
+            """
+        )
+
+        self.assertEqual(
+            json.loads(self.run_node(script)),
+            {"slash": ["review-hard"], "bracket": ["plan-quick"], "lifecycle": []},
+        )
 
     def test_workflow_event_mapping_is_defensive_when_metadata_is_missing(self):
         script = textwrap.dedent(
@@ -132,11 +149,12 @@ class EventMappingTests(unittest.TestCase):
             """
             import { beforeAgentStartPayload } from './pi-extension/event-mapping.ts';
 
+            const prompt = '<skill name="review" location="/tmp/review/SKILL.md">Review the branch</skill>';
             const payload = beforeAgentStartPayload(
               {
-                prompt: 'Please plan the next implementation slice.',
+                prompt,
                 images: [{}, {}],
-                systemPromptOptions: { skills: [{ name: 'Plan' }] },
+                systemPromptOptions: { skills: [{ name: 'Cook' }, { name: 'Review' }] },
               },
               {
                 cwd: '/path/that/does/not/exist',
@@ -159,10 +177,10 @@ class EventMappingTests(unittest.TestCase):
                 "cwd": "/path/that/does/not/exist",
                 "session_file": "/tmp/session-1.jsonl",
                 "hook_event_name": "UserPromptSubmit",
-                "prompt": "Please plan the next implementation slice.",
+                "prompt": '<skill name="review" location="/tmp/review/SKILL.md">Review the branch</skill>',
                 "image_count": 2,
                 "transcript_path": "/tmp/session-1.jsonl",
-                "selected_skills": ["plan"],
+                "selected_skills": ["review"],
                 "branch_name": "",
             },
         )

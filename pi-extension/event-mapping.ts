@@ -21,33 +21,61 @@ export function basePayload(ctx: ExtensionContext, id = sessionId(ctx)) {
 	};
 }
 
-export function selectedSkillNames(event: { systemPromptOptions?: unknown }): string[] {
-	const options = event.systemPromptOptions;
-	if (!options || typeof options !== "object") return [];
-	const skills = (options as { skills?: unknown }).skills;
-	if (!Array.isArray(skills)) return [];
+const SKILL_ENVELOPE_RE = /<skill\b[^>]*\bname=["']([^"']+)["'][^>]*>/gi;
+const BRACKET_COMMAND_RE = /^\s*\[\/([\w:_-]+)\](?:\s+([^\n]*))?\s*$/gm;
+const SLASH_COMMAND_RE = /^\s*\/([\w:_-]+)(?:\s+([^\n]*))?\s*$/gm;
+const LIFECYCLE_COMMANDS = new Set([
+	"clear",
+	"exit",
+	"compact",
+	"resume",
+	"new",
+	"fork",
+	"clone",
+	"tree",
+	"init",
+	"login",
+	"logout",
+	"status",
+	"config",
+	"help",
+	"model",
+	"settings",
+	"session",
+	"copy",
+	"export",
+	"share",
+	"reload",
+	"hotkeys",
+	"changelog",
+	"quit",
+]);
 
+export function selectedSkillNames(event: { prompt?: unknown; systemPromptOptions?: unknown }): string[] {
+	const prompt = typeof event.prompt === "string" ? event.prompt : "";
+	return invokedSkillNames(prompt);
+}
+
+function invokedSkillNames(prompt: string): string[] {
 	const names: string[] = [];
 	const seen = new Set<string>();
-	for (const skill of skills) {
-		const raw = skillName(skill);
+	const add = (raw: string) => {
 		const name = normalizeSkillName(raw);
-		if (!name || seen.has(name)) continue;
+		if (!name || seen.has(name) || LIFECYCLE_COMMANDS.has(name)) return;
 		seen.add(name);
 		names.push(name);
-	}
+	};
+
+	for (const match of prompt.matchAll(SKILL_ENVELOPE_RE)) add(match[1]);
+	for (const match of prompt.matchAll(BRACKET_COMMAND_RE)) add(match[1]);
+	for (const match of prompt.matchAll(SLASH_COMMAND_RE)) add(match[1]);
 	return names;
 }
 
-function skillName(skill: unknown): string {
-	if (typeof skill === "string") return skill;
-	if (!skill || typeof skill !== "object") return "";
-	const value = (skill as { name?: unknown }).name;
-	return typeof value === "string" ? value : "";
-}
-
 function normalizeSkillName(name: string): string {
-	return name.trim().replace(/^\/+/, "").toLowerCase();
+	let normalized = name.trim().replace(/^\/+/, "").toLowerCase();
+	if (normalized.startsWith("skill:")) normalized = normalized.slice("skill:".length);
+	return normalized.trim();
 }
 
 export function currentBranchName(ctx: ExtensionContext): string {
