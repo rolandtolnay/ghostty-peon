@@ -99,6 +99,28 @@ class WorkflowStateTests(unittest.TestCase):
                 self.assertIsNone(workflow_state.resolve(session_id="old-session"))
                 self.assertEqual(workflow_state.resolve(session_id="new-session").slug, "canonical-workflow-titles")
 
+    def test_unwritable_state_file_degrades_without_crashing_hook_facade(self):
+        with hook_test_env() as (root, env, _dirs):
+            blocker = root / "not-a-directory"
+            blocker.write_text("file blocks directory creation")
+            env["GHOSTTY_PEON_WORKFLOW_STATE_FILE"] = str(blocker / "workflows.json")
+            with patch.dict(os.environ, env, clear=True):
+                workstream = workflow_state.attach(
+                    session_id="session-unwritable",
+                    terminal_id="term-unwritable",
+                    state="plan",
+                    slug="canonical-workflow-titles",
+                )
+                workflow_state.deactivate(session_id="session-unwritable", terminal_id="term-unwritable")
+                transferred = workflow_state.transfer_binding(
+                    old_session_id="session-unwritable",
+                    new_session_id="new-session",
+                    terminal_id="term-unwritable",
+                )
+
+                self.assertEqual(workstream.slug, "canonical-workflow-titles")
+                self.assertIsNone(transferred)
+
 
 if __name__ == "__main__":
     unittest.main()

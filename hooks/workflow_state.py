@@ -195,11 +195,17 @@ def _load() -> dict:
 
 def _save(data: dict) -> None:
     path = state_file()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = f"{path}.tmp"
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2, sort_keys=True)
-    os.replace(tmp, path)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2, sort_keys=True)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
 
 
 def _to_workstream(record: dict) -> Workstream:
