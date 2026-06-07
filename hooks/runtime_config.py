@@ -74,3 +74,12 @@ def default_weight_file_name() -> str:
 def weight_state_file() -> str:
     default = os.path.join(weight_state_dir(), default_weight_file_name())
     return os.path.expanduser(env_path("GHOSTTY_PEON_WEIGHT_STATE_FILE", default))
+
+
+def default_workflow_state_file_name() -> str:
+    return "workflows.json" if namespace() == "claude" else f"{namespace()}-workflows.json"
+
+
+def workflow_state_file() -> str:
+    default = os.path.join(weight_state_dir(), default_workflow_state_file_name())
+    return os.path.expanduser(env_path("GHOSTTY_PEON_WORKFLOW_STATE_FILE", default))

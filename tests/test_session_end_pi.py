@@ -1,9 +1,15 @@
 import hashlib
 import json
+import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from helpers import assert_hook_ok, hook_test_env, read_log, run_hook
+from helpers import HOOKS_DIR, assert_hook_ok, hook_test_env, read_log, run_hook
+
+import sys
+sys.path.insert(0, str(HOOKS_DIR))
+import workflow_state
 
 
 class PiSessionEndHookTests(unittest.TestCase):
@@ -103,6 +109,37 @@ class PiSessionEndHookTests(unittest.TestCase):
             self.assertIn("end -> title reset to", log)
             self.assertIn("end -> cleaned debounce state for Pi", log)
             self.assertIn("end -> unit + terminal_id released", log)
+
+    def test_pi_quit_deactivates_workflow_bindings_but_preserves_artifact_attachment(self):
+        session_id = "session-workflow-quit"
+        term_id = "term-workflow-quit"
+        artifact = "/repo/etc/prd/canonical-pi-workflow-titles.md"
+        with hook_test_env(fake_term_id=term_id) as (_root, env, dirs):
+            self.seed_session(dirs, session_id=session_id, term_id=term_id)
+            with patch.dict(os.environ, env, clear=True):
+                original = workflow_state.attach(
+                    session_id=session_id,
+                    terminal_id=term_id,
+                    state="plan",
+                    slug="canonical-pi-workflow-titles",
+                    artifacts=(artifact,),
+                )
+            with tempfile.TemporaryDirectory(prefix="ghostty-peon-project-") as cwd:
+                result = run_hook(
+                    "session-end-hook.py",
+                    {
+                        "session_id": session_id,
+                        "cwd": cwd,
+                        "shutdown_reason": "quit",
+                    },
+                    env,
+                )
+
+            assert_hook_ok(self, result)
+            with patch.dict(os.environ, env, clear=True):
+                self.assertIsNone(workflow_state.resolve(session_id=session_id))
+                self.assertIsNone(workflow_state.resolve(terminal_id=term_id))
+                self.assertEqual(workflow_state.resolve(artifacts=(artifact,)).id, original.id)
 
 
 if __name__ == "__main__":

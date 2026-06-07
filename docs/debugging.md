@@ -39,7 +39,10 @@ Claude settings.json hooks or Pi extension events
 | `hooks/title_handoff.py` | Terminal-scoped title handoff JSON for plan/fork replacement flows |
 | `hooks/ghostty_tab.py` | Ghostty terminal capture, ownership, safe title targeting, stale terminal cleanup, focus checks |
 | `hooks/lifecycle_policy.py` | Pure lifecycle decisions for Pi/Claude replacement, reset, and cleanup behavior |
-| `hooks/tabtitle-hook.py` | UserPromptSubmit: sets 🌀 working emoji, generates slug via Ollama, plays task.acknowledge |
+| `hooks/tabtitle-hook.py` | UserPromptSubmit: sets 🌀 working emoji, applies Pi Canonical Workflow Mode when signaled, otherwise generates slug via Ollama |
+| `hooks/workflow_model.py` | Pure Canonical Workflow Mode decision model: workflow states, artifact slug priority, branch fallback |
+| `hooks/workflow_state.py` | Durable Pi Workstream bindings and artifact attachments under `~/.ghostty-peon/pi-workflows.json` |
+| `hooks/workflow_judgment.py` | Local-LLM Transition Judgment parser/prompts for first-turn check, check→prep, and plan→cook |
 | `hooks/tab-attention-hook.py` | PreToolUse/PermissionRequest: sets attention emoji; PostToolUse clears it |
 | `hooks/tab-stop-question-hook.py` | Stop: heuristic question detection via Ollama, sets ⭐ or 🌿 |
 | `hooks/session-sound-hook.py` | SessionStart: captures/claims terminal, restores handoff/title state, assigns unit, plays session.start where applicable |
@@ -146,7 +149,10 @@ grep "subagent detected" /tmp/claude-tab-hooks.log
 grep "target: SKIPPED (no term_id" /tmp/claude-tab-hooks.log /tmp/pi-tab-hooks.log
 
 # Pi replacement handoff correctness
-grep -E "replacement handoff written|restored replacement terminal_id|restored replacement title|captured terminal_id" /tmp/pi-tab-hooks.log
+grep -E "replacement handoff written|restored replacement terminal_id|restored replacement title|captured terminal_id|workflow binding transferred" /tmp/pi-tab-hooks.log
+
+# Pi canonical workflow and cook-plan title path
+grep -E "workflow judgment|workflow ->|workflow binding transferred" /tmp/pi-tab-hooks.log
 
 # Question/ready status path
 grep -E "agent_end|stop-q|llm ->|skip: no '\?'|skip 🌿: no established title" /tmp/pi-tab-hooks.log /tmp/claude-tab-hooks.log
@@ -289,6 +295,22 @@ Known gotchas:
 - Terminal ownership inference can false-positive for legitimate multiple sessions sharing one Ghostty terminal/split pane. Prefer explicit `agent_id`, lifecycle event, `_CLAUDE_HOOK_NESTED`, or Pi `PI_SUBAGENT_CHILD` when available.
 - A hook with `_CLAUDE_HOOK_NESTED=1` exits before normal logging, so no log line from the child process can be expected.
 
+**Pi Canonical Workflow title or `/cook-plan` handoff is wrong:**
+Canonical Workflow Mode is Pi-only. It writes durable Workstream state to `~/.ghostty-peon/pi-workflows.json` and logs title decisions from `tabtitle-hook.py`:
+
+```sh
+grep -E "workflow judgment|workflow ->|workflow binding transferred" /tmp/pi-tab-hooks.log
+cat ~/.ghostty-peon/pi-workflows.json
+```
+
+Expected `/cook-plan` handoff pattern:
+- replacement `session_start` behavior remains the normal Pi session-start path, including the usual `session.start` sound rules;
+- the first replacement `before_agent_start` reads the `cook-plan` custom metadata from the session file;
+- `tabtitle` logs one `workflow -> 🌀 renamed ('cook-<slug>')` line;
+- there should be no later ordinary `llm returned ...` opportunistic rename for the same kickoff prompt, and only one `task.acknowledge` path for that canonical title change.
+
+If metadata is absent or unreadable, Ghostty Peon should fall back to ordinary Pi title behavior instead of failing the hook.
+
 **Pi replacement starts restore the wrong tab or stale status:**
 Known failure modes and expected fixes are all at the lifecycle handoff seam:
 
@@ -300,7 +322,7 @@ Known failure modes and expected fixes are all at the lifecycle handoff seam:
 Useful checks:
 
 ```sh
-grep -E "event session_shutdown reason=|replacement handoff written|restored replacement terminal_id|restored replacement title|captured terminal_id" /tmp/pi-tab-hooks.log
+grep -E "event session_shutdown reason=|replacement handoff written|restored replacement terminal_id|restored replacement title|captured terminal_id|workflow binding transferred" /tmp/pi-tab-hooks.log
 ```
 
 **Stop-question / ⭐ vs 🌿 status is wrong:**
@@ -565,6 +587,7 @@ Pi uses a separate runtime namespace from Claude Code:
 /tmp/pi-sound-session/
 /tmp/pi-sound-last/
 ~/.ghostty-peon/pi-weights.json
+~/.ghostty-peon/pi-workflows.json
 ```
 
 Pi runner log lines include lifecycle metadata such as `event session_start reason=...`, `event session_shutdown reason=...`, `event session_before_fork`, and `event session_compact`. Use these with the session suffix to distinguish normal startup, trust/new-session flows, fork replacement, resume, and compaction. For replacement flows, look for `replacement handoff written` on shutdown followed by `restored replacement terminal_id=...` on the new session; if the start falls back to `captured terminal_id=...`, there was no usable target-session handoff.

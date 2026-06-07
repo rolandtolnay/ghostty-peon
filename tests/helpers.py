@@ -40,6 +40,7 @@ def hook_test_env(namespace="pi", fake_term_id="term-test-1"):
             "session_index": root / "session-index",
             "sound_last": root / "sound-last",
             "weights": root / "weights",
+            "workflows": root / "workflows",
         }
         for directory in dirs.values():
             directory.mkdir(parents=True, exist_ok=True)
@@ -60,6 +61,7 @@ def hook_test_env(namespace="pi", fake_term_id="term-test-1"):
                 "GHOSTTY_PEON_SOUND_LAST_DIR": str(dirs["sound_last"]),
                 "GHOSTTY_PEON_WEIGHT_STATE_DIR": str(dirs["weights"]),
                 "GHOSTTY_PEON_WEIGHT_STATE_FILE": str(dirs["weights"] / "weights.json"),
+                "GHOSTTY_PEON_WORKFLOW_STATE_FILE": str(dirs["workflows"] / "workflows.json"),
                 "PEON_SOUND_CLASS": "none",
                 "PATH": f"{fake_bin}{os.pathsep}{env.get('PATH', '')}",
             }

@@ -106,7 +106,7 @@ class SlugValidationTests(unittest.TestCase):
     def test_optional_local_llm_wrapper_uses_high_priority_for_tabtitle(self):
         client = load_client()
         completed = Mock(returncode=0, stdout="generated-slug\n", stderr="")
-        with patch.dict(os.environ, {"GHOSTTY_PEON_LOCAL_LLM_WRAPPER": "/tmp/llm"}, clear=False), patch.object(
+        with patch.dict(os.environ, {"GHOSTTY_PEON_LOCAL_LLM_CLIENT": "", "GHOSTTY_PEON_LOCAL_LLM_WRAPPER": "/tmp/llm"}, clear=False), patch.object(
             client.Path, "exists", return_value=True
         ), patch.object(client.subprocess, "run", return_value=completed) as run:
             result = client.llm(
@@ -128,7 +128,7 @@ class SlugValidationTests(unittest.TestCase):
 
     def test_optional_local_llm_wrapper_failure_falls_back_to_bundled_client(self):
         client = load_client()
-        with patch.dict(os.environ, {"GHOSTTY_PEON_LOCAL_LLM_WRAPPER": "/tmp/llm"}, clear=False), patch.object(
+        with patch.dict(os.environ, {"GHOSTTY_PEON_LOCAL_LLM_CLIENT": "", "GHOSTTY_PEON_LOCAL_LLM_WRAPPER": "/tmp/llm"}, clear=False), patch.object(
             client.Path, "exists", return_value=True
         ), patch.object(client.subprocess, "run", side_effect=FileNotFoundError("missing")), patch.object(
             client, "_direct_ollama_chat", return_value={"message": {"content": "fallback-slug"}}
@@ -137,6 +137,20 @@ class SlugValidationTests(unittest.TestCase):
 
         self.assertEqual("fallback-slug", result)
         direct.assert_called_once()
+
+    def test_workflow_transition_uses_high_priority_local_llm_wrapper(self):
+        client = load_client()
+        completed = Mock(returncode=0, stdout="CHECK\n", stderr="")
+        with patch.dict(os.environ, {"GHOSTTY_PEON_LOCAL_LLM_CLIENT": "", "GHOSTTY_PEON_LOCAL_LLM_WRAPPER": "/tmp/llm"}, clear=False), patch.object(
+            client.Path, "exists", return_value=True
+        ), patch.object(client.subprocess, "run", return_value=completed) as run:
+            result = client.llm("prompt", tag="workflow-transition", timeout=5)
+
+        self.assertEqual("CHECK", result)
+        args = run.call_args.args[0]
+        self.assertIn("--priority", args)
+        self.assertEqual("high", args[args.index("--priority") + 1])
+        self.assertEqual("workflow-transition", args[args.index("--tag") + 1])
 
 
 if __name__ == "__main__":

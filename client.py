@@ -17,7 +17,7 @@ from pathlib import Path
 OLLAMA_URL = "http://localhost:11434/api/chat"
 MODEL = "gemma4:e2b"
 DEFAULT_CTX = 8192
-HIGH_PRIORITY_TAGS = {"tabtitle", "stop-question"}
+HIGH_PRIORITY_TAGS = {"tabtitle", "stop-question", "workflow-transition"}
 
 LOG_DIR = Path.home() / ".local" / "share" / "local-llm"
 RETAIN_MONTHS = 3

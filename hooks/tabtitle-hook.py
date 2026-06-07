@@ -22,9 +22,14 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import runtime_config
 import title_state
+import workflow_judgment
+import workflow_model
+import workflow_state
 from sound_utils import (
     EMOJI_WORKING,
+    get_terminal_id,
     log,
     play_sound,
     set_status_emoji,
@@ -134,6 +139,111 @@ def has_established_title(session_id: str) -> bool:
     return bool(clean_title) and not is_retryable_fallback_state(state)
 
 
+def canonical_slug_from_title(title: str) -> tuple[str, str]:
+    """Return (state, slug) when a clean title already has a workflow prefix."""
+    clean = strip_all_emojis(title).strip()
+    for state in workflow_model.WORKFLOW_STATES:
+        prefix = f"{state}-"
+        if clean.startswith(prefix):
+            slug = workflow_model.normalize_slug(clean[len(prefix):])
+            if slug:
+                return state, slug
+    return "", ""
+
+
+def workflow_artifact_candidates(data: dict, prompt: str, cook_metadata: dict | None = None) -> list[str]:
+    """Collect observable artifact path candidates from hook payload metadata."""
+    candidates: list[str] = []
+    for key in ("workflow_artifacts", "artifact_candidates"):
+        value = data.get(key)
+        if isinstance(value, list):
+            candidates.extend(item for item in value if isinstance(item, str))
+    for key in (
+        "cook_plan_source_path",
+        "cook_plan_source_absolute_path",
+        "source_path",
+        "source_absolute_path",
+    ):
+        value = data.get(key)
+        if isinstance(value, str):
+            candidates.append(value)
+    metadata = cook_metadata if isinstance(cook_metadata, dict) else data.get("cook_plan")
+    if isinstance(metadata, dict):
+        for key in ("sourcePath", "sourceAbsolutePath", "source_path", "source_absolute_path"):
+            value = metadata.get(key)
+            if isinstance(value, str):
+                candidates.append(value)
+    candidates.extend(artifact.path for artifact in workflow_model.extract_artifacts(prompt))
+    seen = set()
+    cleaned: list[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            cleaned.append(candidate)
+    return cleaned
+
+
+def cook_plan_metadata(data: dict) -> dict | None:
+    direct = data.get("cook_plan")
+    if _is_cook_plan_metadata(direct):
+        return direct
+    session_file = data.get("session_file") or data.get("transcript_path")
+    if not isinstance(session_file, str) or not session_file:
+        return None
+    return read_cook_plan_metadata(session_file)
+
+
+def read_cook_plan_metadata(session_file: str) -> dict | None:
+    try:
+        with open(session_file) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                metadata = _cook_plan_metadata_from_entry(entry)
+                if metadata:
+                    return metadata
+    except OSError:
+        return None
+    return None
+
+
+def _cook_plan_metadata_from_entry(entry: object) -> dict | None:
+    if not isinstance(entry, dict):
+        return None
+    candidates = []
+    for key in ("metadata", "data", "payload"):
+        value = entry.get(key)
+        if isinstance(value, dict):
+            candidates.append(value)
+    candidates.append(entry)
+    for candidate in candidates:
+        if _is_cook_plan_metadata(candidate):
+            return candidate
+    return None
+
+
+def _is_cook_plan_metadata(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    markers = [value.get("kind"), value.get("type"), value.get("customType"), value.get("name")]
+    if "cook-plan" in markers:
+        return True
+    nested = value.get("metadata")
+    return isinstance(nested, dict) and _is_cook_plan_metadata(nested)
+
+
+def selected_skills_from_payload(data: dict) -> tuple[str, ...]:
+    value = data.get("selected_skills")
+    if not isinstance(value, list):
+        return ()
+    return tuple(item for item in value if isinstance(item, str))
+
+
 def should_skip(session_id: str, prompt: str) -> str | None:
     """Return a skip reason string, or None to proceed."""
     # First message always triggers (no debounce file yet)
@@ -223,6 +333,15 @@ def get_recent_user_messages(
         user_messages = user_messages[:-1]
 
     return user_messages[-count:] if user_messages else []
+
+
+def conversation_context(data: dict, session_id: str, prompt: str, is_first_message: bool) -> tuple[str, list[str]]:
+    if is_first_message:
+        title_state.delete_origin(session_id)
+        return "", []
+    origin_message = title_state.read_origin(session_id)
+    transcript_path = get_transcript_path(data, session_id)
+    return origin_message, get_recent_user_messages(transcript_path, prompt, count=1)
 
 
 @dataclass(frozen=True)
@@ -441,6 +560,165 @@ def is_valid_slug(slug: str) -> bool:
     return True
 
 
+def workflow_transition_kind(is_first_message: bool, current_state: str, selected_skills: tuple[str, ...]) -> str:
+    if workflow_model.deterministic_state(selected_skills):
+        return ""
+    if is_first_message and not current_state:
+        return "ordinary-to-check"
+    if current_state == workflow_model.CHECK:
+        return "check-to-prep"
+    if current_state == workflow_model.PLAN:
+        return "plan-to-cook"
+    return ""
+
+
+def judge_workflow_transition(
+    kind: str,
+    prompt: str,
+    current_state: str,
+    current_title: str,
+    origin_message: str,
+    recent_messages: list[str],
+    session_id: str,
+) -> str:
+    if not kind:
+        return ""
+    result = workflow_judgment.judge(
+        workflow_judgment.JudgmentContext(
+            kind=kind,
+            prompt=prompt,
+            current_state=current_state,
+            current_title=current_title,
+            origin_message=origin_message,
+            recent_messages=tuple(recent_messages),
+        )
+    )
+    log(session_id, "tabtitle", f"workflow judgment {kind} -> {result.transition or 'none'}")
+    return result.transition
+
+
+def maybe_apply_canonical_workflow(
+    data: dict,
+    session_id: str,
+    prompt: str,
+    current_title: str,
+    semantic_current_title: str,
+    current_timestamp: str,
+    is_first_message: bool,
+    origin_message: str,
+    recent_messages: list[str],
+    image_count: int,
+) -> bool:
+    """Apply Pi Canonical Workflow Mode if the model returns a decision."""
+    if runtime_config.namespace() != "pi":
+        return False
+
+    cook_metadata = cook_plan_metadata(data)
+    selected_skills = selected_skills_from_payload(data)
+    if cook_metadata and "cook-plan" not in selected_skills:
+        selected_skills = (*selected_skills, "cook-plan")
+    artifact_candidates = workflow_artifact_candidates(data, prompt, cook_metadata)
+    term_id = get_terminal_id(session_id) or ""
+    resolved = workflow_state.resolve(
+        session_id=session_id,
+        terminal_id=term_id,
+        artifacts=tuple(artifact_candidates),
+    )
+
+    title_state_name, title_slug = canonical_slug_from_title(current_title)
+    current_workflow_state = resolved.state if resolved else title_state_name
+    inherited_slug = (resolved.slug if resolved else "") or title_slug or semantic_current_title
+    active_binding = bool(
+        resolved
+        and (
+            session_id in resolved.active_sessions
+            or (term_id and term_id in resolved.active_terminals)
+        )
+    )
+    artifact_binding_slug = resolved.slug if resolved and artifact_candidates else ""
+
+    transition = judge_workflow_transition(
+        workflow_transition_kind(is_first_message, current_workflow_state, selected_skills),
+        prompt,
+        current_workflow_state,
+        current_title,
+        origin_message,
+        recent_messages,
+        session_id,
+    )
+
+    decision = workflow_model.decide(
+        workflow_model.WorkflowContext(
+            current_state=current_workflow_state,
+            prompt=prompt,
+            selected_skills=selected_skills,
+            artifact_candidates=tuple(artifact_candidates),
+            branch_name=data.get("branch_name", "") if isinstance(data.get("branch_name"), str) else "",
+            inherited_slug=inherited_slug,
+            transition=transition,
+            first_user_message=is_first_message,
+            active_binding=active_binding,
+            artifact_binding_slug=artifact_binding_slug,
+        )
+    )
+
+    if decision.needs_slug:
+        log(
+            session_id,
+            "tabtitle",
+            f"calling llm for workflow slug (state={decision.state!r}, current={semantic_current_title!r})",
+        )
+        slug_result = generate_slug_result(
+            prompt,
+            semantic_current_title,
+            origin_message,
+            recent_messages,
+            session_id,
+            image_count,
+        )
+        slug = slug_result.slug
+        log(session_id, "tabtitle", f"workflow slug llm returned {slug!r}")
+        if not slug and not current_title and image_count:
+            slug = fallback_slug_for_image_prompt(prompt)
+            log(session_id, "tabtitle", f"workflow image fallback returned {slug!r}")
+        if not slug:
+            return False
+        decision = workflow_model.WorkflowDecision(workflow_model.ACTION_SET, decision.state, slug)
+
+    if not decision.state or not decision.slug:
+        return False
+
+    canonical_title = decision.canonical_title
+    now = str(time.time())
+    changed = canonical_title != current_title
+    timestamp = now if changed else current_timestamp
+
+    if not set_status_emoji(session_id, EMOJI_WORKING, canonical_title, timestamp, "tabtitle"):
+        log(session_id, "tabtitle", f"workflow set_status_emoji failed for {canonical_title!r}")
+        return True
+
+    workflow_state.attach(
+        session_id=session_id,
+        terminal_id=term_id,
+        state=decision.state,
+        slug=decision.slug,
+        cwd=data.get("cwd", "") if isinstance(data.get("cwd"), str) else "",
+        branch=data.get("branch_name", "") if isinstance(data.get("branch_name"), str) else "",
+        artifacts=tuple(artifact_candidates),
+        title=canonical_title,
+    )
+
+    if decision.action == workflow_model.ACTION_KEEP or not changed:
+        log(session_id, "tabtitle", f"workflow -> keep ({canonical_title!r})")
+        return True
+
+    log(session_id, "tabtitle", f"workflow -> {EMOJI_WORKING} renamed ({canonical_title!r})")
+    play_sound("task.acknowledge", session_id)
+    if is_first_message or not title_state.read_origin(session_id):
+        title_state.write_origin(session_id, prompt, max_chars=MAX_MSG_CHARS)
+    return True
+
+
 def main():
     # Guard against recursive execution from nested claude subprocesses
     if os.environ.get("_CLAUDE_HOOK_NESTED"):
@@ -466,28 +744,32 @@ def main():
     current_title = strip_emoji(state.title)
     semantic_current_title = semantic_title_for_llm(state)
     current_timestamp = state.timestamp
+    is_first_message = not title_state.exists(session_id)
+    origin_message, recent_messages = conversation_context(data, session_id, prompt, is_first_message)
     if current_title:
         log(session_id, "tabtitle", f"-> {EMOJI_WORKING} working ({current_title!r})")
         set_status_emoji(session_id, EMOJI_WORKING, current_title, current_timestamp, "tabtitle")
     else:
         log(session_id, "tabtitle", f"skip {EMOJI_WORKING}: no established title yet")
 
+    if maybe_apply_canonical_workflow(
+        data,
+        session_id,
+        prompt,
+        current_title,
+        semantic_current_title,
+        current_timestamp,
+        is_first_message,
+        origin_message,
+        recent_messages,
+        image_count,
+    ):
+        sys.exit(0)
+
     skip_reason = should_skip(session_id, prompt)
     if skip_reason:
         log(session_id, "tabtitle", f"skip: {skip_reason}")
         sys.exit(0)
-
-    # Gather conversation context
-    is_first_message = not title_state.exists(session_id)
-    origin_message = ""
-    recent_messages = []
-    if is_first_message:
-        # Clean stale origin file (e.g., after /clear deletes debounce)
-        title_state.delete_origin(session_id)
-    else:
-        origin_message = title_state.read_origin(session_id)
-        transcript_path = get_transcript_path(data, session_id)
-        recent_messages = get_recent_user_messages(transcript_path, prompt, count=1)
 
     log(
         session_id,

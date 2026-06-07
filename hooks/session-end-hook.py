@@ -14,6 +14,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lifecycle_policy
 import title_state
+import workflow_state
 from sound_utils import (
     EMOJI_WORKING,
     get_terminal_id,
@@ -115,6 +116,9 @@ elif lifecycle_policy.should_reset_title_on_end(runtime, shutdown_reason, plan_a
 if lifecycle_policy.should_keep_title_state_on_end(runtime, shutdown_reason):
     log(session_id, "session", f"end -> kept debounce state for Pi replacement (reason={shutdown_reason!r})")
 else:
+    if is_pi:
+        workflow_state.deactivate(session_id=session_id, terminal_id=term_id or "")
+        log(session_id, "session", f"end -> deactivated workflow bindings for Pi (reason={shutdown_reason!r})")
     title_state.delete(session_id)
     if is_pi:
         log(session_id, "session", f"end -> cleaned debounce state for Pi (reason={shutdown_reason!r})")

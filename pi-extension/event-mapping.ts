@@ -1,4 +1,5 @@
 // Managed by ghostty-peon install.js. Source: pi-extension/event-mapping.ts
+import { execFileSync } from "node:child_process";
 import type { AgentEndEvent, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export type PermissionEvent = {
@@ -17,6 +18,69 @@ export function basePayload(ctx: ExtensionContext, id = sessionId(ctx)) {
 		session_id: id,
 		cwd: ctx.cwd,
 		session_file: ctx.sessionManager.getSessionFile() || "",
+	};
+}
+
+export function selectedSkillNames(event: { systemPromptOptions?: unknown }): string[] {
+	const options = event.systemPromptOptions;
+	if (!options || typeof options !== "object") return [];
+	const skills = (options as { skills?: unknown }).skills;
+	if (!Array.isArray(skills)) return [];
+
+	const names: string[] = [];
+	const seen = new Set<string>();
+	for (const skill of skills) {
+		const raw = skillName(skill);
+		const name = normalizeSkillName(raw);
+		if (!name || seen.has(name)) continue;
+		seen.add(name);
+		names.push(name);
+	}
+	return names;
+}
+
+function skillName(skill: unknown): string {
+	if (typeof skill === "string") return skill;
+	if (!skill || typeof skill !== "object") return "";
+	const value = (skill as { name?: unknown }).name;
+	return typeof value === "string" ? value : "";
+}
+
+function normalizeSkillName(name: string): string {
+	return name.trim().replace(/^\/+/, "").toLowerCase();
+}
+
+export function currentBranchName(ctx: ExtensionContext): string {
+	try {
+		const cwd = (ctx as { cwd?: unknown }).cwd;
+		if (typeof cwd !== "string" || !cwd) return "";
+		const branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+			cwd,
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+			timeout: 1000,
+		}).trim();
+		return branch && branch !== "HEAD" ? branch : "";
+	} catch {
+		return "";
+	}
+}
+
+export function beforeAgentStartPayload(
+	event: { prompt?: string; images?: unknown; systemPromptOptions?: unknown },
+	ctx: ExtensionContext,
+	id = sessionId(ctx),
+) {
+	const imageCount = Array.isArray(event.images) ? event.images.length : 0;
+	const sessionFile = ctx.sessionManager.getSessionFile() || "";
+	return {
+		...basePayload(ctx, id),
+		hook_event_name: "UserPromptSubmit",
+		prompt: typeof event.prompt === "string" ? event.prompt : "",
+		image_count: imageCount,
+		transcript_path: sessionFile,
+		selected_skills: selectedSkillNames(event),
+		branch_name: currentBranchName(ctx),
 	};
 }
 

@@ -17,6 +17,7 @@ class RuntimeConfigTests(unittest.TestCase):
             self.assertEqual(runtime_config.debounce_dir(), "/tmp/claude-tabtitle")
             self.assertEqual(runtime_config.terminal_id_dir(), "/tmp/claude-tabterminal")
             self.assertEqual(runtime_config.default_weight_file_name(), "weights.json")
+            self.assertEqual(runtime_config.default_workflow_state_file_name(), "workflows.json")
 
     def test_pi_namespace_changes_default_paths_and_weight_file(self):
         with patch.dict(os.environ, {"GHOSTTY_PEON_NAMESPACE": "pi"}, clear=True):
@@ -24,6 +25,7 @@ class RuntimeConfigTests(unittest.TestCase):
             self.assertEqual(runtime_config.log_file(), "/tmp/pi-tab-hooks.log")
             self.assertEqual(runtime_config.plan_handoff_dir(), "/tmp/pi-plan-handoff")
             self.assertEqual(runtime_config.default_weight_file_name(), "pi-weights.json")
+            self.assertEqual(runtime_config.default_workflow_state_file_name(), "pi-workflows.json")
 
     def test_explicit_env_paths_override_namespace_defaults(self):
         with patch.dict(
@@ -33,12 +35,14 @@ class RuntimeConfigTests(unittest.TestCase):
                 "GHOSTTY_PEON_DEBOUNCE_DIR": "/custom/debounce",
                 "GHOSTTY_PEON_TERMINAL_ID_DIR": "/custom/terminal",
                 "GHOSTTY_PEON_WEIGHT_STATE_FILE": "/custom/weights.json",
+                "GHOSTTY_PEON_WORKFLOW_STATE_FILE": "/custom/workflows.json",
             },
             clear=True,
         ):
             self.assertEqual(runtime_config.debounce_dir(), "/custom/debounce")
             self.assertEqual(runtime_config.terminal_id_dir(), "/custom/terminal")
             self.assertEqual(runtime_config.weight_state_file(), "/custom/weights.json")
+            self.assertEqual(runtime_config.workflow_state_file(), "/custom/workflows.json")
 
 
 if __name__ == "__main__":
