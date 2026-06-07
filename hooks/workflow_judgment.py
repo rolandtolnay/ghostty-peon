@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
-import socket
 import sys
 
 
@@ -55,9 +54,7 @@ def judge(context: JudgmentContext) -> JudgmentResult:
         return JudgmentResult()
     try:
         raw = call_llm(_user_message(context), system=_PROMPTS[context.kind])
-    except Exception as error:
-        if _is_timeout(error):
-            return JudgmentResult()
+    except Exception:
         return JudgmentResult()
     return JudgmentResult(parse_transition(raw, target))
 
@@ -99,7 +96,3 @@ def _user_message(context: JudgmentContext) -> str:
     parts.append(f"<current_message>{context.prompt}</current_message>")
     parts.append("Output only the allowed token:")
     return "\n".join(parts)
-
-
-def _is_timeout(error: Exception) -> bool:
-    return isinstance(error, (TimeoutError, socket.timeout)) or "timed out" in str(error).lower()
