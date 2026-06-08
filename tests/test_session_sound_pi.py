@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from helpers import HOOKS_DIR, assert_hook_ok, hook_test_env, read_log, run_hook
+from helpers import HOOKS_DIR, assert_hook_ok, hook_test_env, read_log, run_hook, seed_workflow_session
 
 import sys
 sys.path.insert(0, str(HOOKS_DIR))
@@ -55,16 +55,15 @@ class PiSessionSoundHookTests(unittest.TestCase):
         with hook_test_env(fake_term_id="term-focused-other") as (root, env, dirs):
             old_session = "old-session"
             new_session = "new-session"
-            (dirs["terminal"] / old_session).write_text("term-outgoing")
+            seed_workflow_session(
+                dirs,
+                env,
+                session_id=old_session,
+                terminal_id="term-outgoing",
+                state="plan",
+                slug="fix-pi-subagent-trust-error",
+            )
             (dirs["terminal"] / "other-session").write_text("term-focused-other")
-            (dirs["debounce"] / old_session).write_text("123\n🌿 fix-pi-subagent-trust-error\n")
-            with patch.dict(os.environ, env, clear=True):
-                workflow_state.attach(
-                    session_id=old_session,
-                    terminal_id="term-outgoing",
-                    state="plan",
-                    slug="fix-pi-subagent-trust-error",
-                )
 
             end_result = run_hook(
                 "session-end-hook.py",
@@ -96,15 +95,42 @@ class PiSessionSoundHookTests(unittest.TestCase):
             self.assertEqual((dirs["terminal"] / "other-session").read_text(), "term-focused-other")
             self.assertEqual(
                 (dirs["debounce"] / new_session).read_text(),
-                "0\n🌿 fix-pi-subagent-trust-error",
+                "0\n🌿 plan-fix-pi-subagent-trust-error",
             )
             with patch.dict(os.environ, env, clear=True):
-                self.assertIsNone(workflow_state.resolve(session_id=old_session))
-                self.assertEqual(workflow_state.resolve(session_id=new_session).slug, "fix-pi-subagent-trust-error")
+                self.assertIsNone(workflow_state.resolve_active(session_id=old_session))
+                self.assertEqual(workflow_state.resolve_active(session_id=new_session).slug, "fix-pi-subagent-trust-error")
             log = read_log(root)
             self.assertIn("new -> restored replacement terminal_id='term-outgoing'", log)
-            self.assertIn("new -> restored replacement title '🌿 fix-pi-subagent-trust-error'", log)
+            self.assertIn("new -> restored replacement title '🌿 plan-fix-pi-subagent-trust-error'", log)
             self.assertIn("new -> workflow binding transferred", log)
+
+    def test_clear_deactivates_workflow_binding(self):
+        with hook_test_env(fake_term_id="term-clear") as (root, env, dirs):
+            seed_workflow_session(
+                dirs,
+                env,
+                session_id="clear-session",
+                terminal_id="term-clear",
+                state="review",
+                slug="skill-execution",
+            )
+
+            result = run_hook(
+                "session-sound-hook.py",
+                {
+                    "session_id": "clear-session",
+                    "cwd": str(root / "project"),
+                    "source": "clear",
+                    "pi_reason": "clear",
+                },
+                env,
+            )
+
+            assert_hook_ok(self, result)
+            with patch.dict(os.environ, env, clear=True):
+                self.assertIsNone(workflow_state.resolve_active(session_id="clear-session", terminal_id="term-clear"))
+            self.assertIn("clear -> deactivated workflow bindings", read_log(root))
 
     def test_resume_without_handoff_or_title_resets_to_folder(self):
         with hook_test_env(fake_term_id="term-resume") as (root, env, dirs):

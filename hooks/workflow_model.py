@@ -22,6 +22,12 @@ ACTION_SET = "set"
 ACTION_KEEP = "keep"
 ACTION_NEEDS_SLUG = "needs_slug"
 
+BINDING_CREATE = "create"
+BINDING_CREATE_REPLACING_ACTIVE = "create_replacing_active"
+BINDING_KEEP_ACTIVE = "keep_active"
+BINDING_ATTACH_ARTIFACT = "attach_artifact"
+BINDING_REPLACE_ACTIVE = "replace_active"
+
 _SKILL_STATE = {
     "prep": PREP,
     "to-prd": PREP,
@@ -50,6 +56,43 @@ _GENERIC_BRANCHES = {
     "production",
     "prod",
     "release",
+}
+_SKILL_ENVELOPE_RE = re.compile(r"<skill\b[^>]*\bname=[\"']([^\"']+)[\"'][^>]*>", re.IGNORECASE)
+_COMMAND_NAME = r"[\w:_-]+"
+_BRACKET_COMMAND_RE = re.compile(rf"(?m)^\s*\[/({_COMMAND_NAME})\](?:[ \t]+([^\n]*))?\s*$")
+_SLASH_COMMAND_RE = re.compile(rf"(?m)^\s*/({_COMMAND_NAME})(?:[ \t]+([^\n]*))?\s*$")
+_LIFECYCLE_COMMANDS = {
+    "clear",
+    "exit",
+    "compact",
+    "resume",
+    "new",
+    "fork",
+    "clone",
+    "tree",
+    "init",
+    "login",
+    "logout",
+    "status",
+    "config",
+    "help",
+    "model",
+    "settings",
+    "session",
+    "copy",
+    "export",
+    "share",
+    "reload",
+    "hotkeys",
+    "changelog",
+    "quit",
+}
+_CONTINUING_SIGNALS = {
+    CHECK: {CHECK, PREP, PLAN},
+    PREP: {PREP, PLAN, COOK},
+    PLAN: {PLAN, COOK, REVIEW},
+    COOK: {COOK, REVIEW},
+    REVIEW: {REVIEW},
 }
 
 
@@ -90,6 +133,37 @@ class WorkflowDecision:
         return self.action == ACTION_NEEDS_SLUG
 
 
+@dataclass(frozen=True)
+class WorkflowBindingContext:
+    active_workstream_id: str = ""
+    artifact_workstream_id: str = ""
+    starts_new_workstream: bool = False
+
+
+def binding_action(context: WorkflowBindingContext) -> str:
+    """Return the explicit persistence action for a canonical workflow decision."""
+    active_id = context.active_workstream_id or ""
+    artifact_id = context.artifact_workstream_id or ""
+    if artifact_id and active_id and artifact_id != active_id:
+        return BINDING_REPLACE_ACTIVE
+    if artifact_id:
+        return BINDING_ATTACH_ARTIFACT
+    if active_id and context.starts_new_workstream:
+        return BINDING_CREATE_REPLACING_ACTIVE
+    if active_id:
+        return BINDING_KEEP_ACTIVE
+    return BINDING_CREATE
+
+
+def starts_new_workstream(current_state: str, signal_state: str, transition_state: str = "") -> bool:
+    """Return True when an explicit deterministic signal should replace active identity."""
+    current = _normalize_state(current_state)
+    signal = _normalize_state(signal_state)
+    if not current or not signal or transition_state:
+        return False
+    return signal not in _CONTINUING_SIGNALS.get(current, set())
+
+
 def decide(context: WorkflowContext) -> WorkflowDecision:
     """Return the canonical workflow title decision for observed facts."""
     signal_state = deterministic_state(context.selected_skills)
@@ -115,6 +189,29 @@ def decide(context: WorkflowContext) -> WorkflowDecision:
     return WorkflowDecision(ACTION_SET, target_state, slug)
 
 
+def invoked_skill_names(prompt: str) -> tuple[str, ...]:
+    """Return canonical skill names from explicit prompt invocation evidence."""
+    if not isinstance(prompt, str) or not prompt:
+        return ()
+
+    names: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw: str) -> None:
+        name = _normalize_skill(raw)
+        if not name or name in seen or name in _LIFECYCLE_COMMANDS:
+            return
+        seen.add(name)
+        names.append(name)
+
+    for match in _SKILL_ENVELOPE_RE.finditer(prompt):
+        add(match.group(1))
+    for regex in (_BRACKET_COMMAND_RE, _SLASH_COMMAND_RE):
+        for match in regex.finditer(prompt):
+            add(match.group(1))
+    return tuple(names)
+
+
 def deterministic_state(selected_skills: tuple[str, ...] | list[str]) -> str:
     for skill in selected_skills or ():
         normalized = _normalize_skill(skill)
@@ -126,7 +223,10 @@ def deterministic_state(selected_skills: tuple[str, ...] | list[str]) -> str:
 def _normalize_skill(skill: object) -> str:
     if not isinstance(skill, str):
         return ""
-    return skill.strip().lstrip("/").lower()
+    normalized = skill.strip().lstrip("/").lower()
+    if normalized.startswith("skill:"):
+        normalized = normalized[len("skill:"):]
+    return normalized.strip()
 
 
 def _normalize_state(value: object) -> str:

@@ -8,6 +8,45 @@ import workflow_model
 
 
 class WorkflowModelTests(unittest.TestCase):
+    def test_invoked_skill_names_parse_pi_envelopes_and_prompt_commands(self):
+        prompt = """<skill name=\"Review-Hard\" location=\"/tmp/review/SKILL.md\">\nreview branch\n</skill>\n[/plan-quick] summarize\n/reload\n/skill:cook-plan implement\n"""
+
+        self.assertEqual(
+            workflow_model.invoked_skill_names(prompt),
+            ("review-hard", "plan-quick", "cook-plan"),
+        )
+
+    def test_binding_action_is_explicit_from_active_and_artifact_identity(self):
+        cases = [
+            ("", "", False, workflow_model.BINDING_CREATE),
+            ("active", "", False, workflow_model.BINDING_KEEP_ACTIVE),
+            ("active", "", True, workflow_model.BINDING_CREATE_REPLACING_ACTIVE),
+            ("", "artifact", False, workflow_model.BINDING_ATTACH_ARTIFACT),
+            ("same", "same", True, workflow_model.BINDING_ATTACH_ARTIFACT),
+            ("active", "artifact", True, workflow_model.BINDING_REPLACE_ACTIVE),
+        ]
+
+        for active_id, artifact_id, starts_new, expected in cases:
+            with self.subTest(active_id=active_id, artifact_id=artifact_id, starts_new=starts_new):
+                self.assertEqual(
+                    workflow_model.binding_action(
+                        workflow_model.WorkflowBindingContext(
+                            active_workstream_id=active_id,
+                            artifact_workstream_id=artifact_id,
+                            starts_new_workstream=starts_new,
+                        )
+                    ),
+                    expected,
+                )
+
+    def test_starts_new_workstream_for_backward_explicit_signals_only(self):
+        self.assertFalse(workflow_model.starts_new_workstream("plan", "cook"))
+        self.assertFalse(workflow_model.starts_new_workstream("cook", "review"))
+        self.assertFalse(workflow_model.starts_new_workstream("plan", "plan"))
+        self.assertFalse(workflow_model.starts_new_workstream("plan", "prep", transition_state="prep"))
+        self.assertTrue(workflow_model.starts_new_workstream("plan", "prep"))
+        self.assertTrue(workflow_model.starts_new_workstream("review", "plan"))
+
     def test_deterministic_skill_signal_selects_workflow_state(self):
         cases = [
             ("prep", "prep"),

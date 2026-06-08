@@ -1,8 +1,8 @@
 """Durable Pi Canonical Workflow Mode state.
 
-State is scoped to Workstreams, not projects or branches. The public facade keeps
-callers away from the JSON mechanics so the on-disk shape can evolve without
-changing hook behavior.
+State is scoped to Workstreams, not projects or branches. The public functions
+name whether a caller is resolving active tab/session ownership, explicit
+artifact attachment, or replacement between Workstreams.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ def state_file() -> str:
     return runtime_config.workflow_state_file()
 
 
-def attach(
+def create_workstream(
     session_id: str = "",
     terminal_id: str = "",
     state: str = "",
@@ -44,73 +44,123 @@ def attach(
     artifacts: tuple[str, ...] | list[str] = (),
     title: str = "",
 ) -> Workstream:
-    """Attach the current session/tab/artifacts to a Workstream and persist it."""
-    data = _load()
-    workstreams = data.setdefault("workstreams", {})
-    artifact_paths = _clean_artifacts(artifacts)
-    wid = _find_workstream_id(data, session_id=session_id, terminal_id=terminal_id, artifacts=artifact_paths)
-    now = time.time()
-
-    if wid and wid in workstreams:
-        record = workstreams[wid]
-    else:
-        wid = _new_id()
-        record = {
-            "id": wid,
-            "state": "",
-            "slug": "",
-            "last_title": "",
-            "cwd": "",
-            "branch": "",
-            "artifacts": [],
-            "active_sessions": [],
-            "active_terminals": [],
-            "created_at": now,
-            "updated_at": now,
-        }
-        workstreams[wid] = record
-
-    normalized_state = _normalize_state(state) or record.get("state", "")
-    normalized_slug = workflow_model.normalize_slug(slug) or record.get("slug", "")
-    if normalized_state:
-        record["state"] = normalized_state
-    if normalized_slug:
-        record["slug"] = normalized_slug
-    if title:
-        record["last_title"] = title
-    elif normalized_state and normalized_slug:
-        record["last_title"] = f"{normalized_state}-{normalized_slug}"
-    if cwd:
-        record["cwd"] = cwd
-    if branch:
-        record["branch"] = branch
-    _append_unique(record.setdefault("active_sessions", []), session_id)
-    _append_unique(record.setdefault("active_terminals", []), terminal_id)
-    for artifact in artifact_paths:
-        _append_unique(record.setdefault("artifacts", []), artifact)
-    record["updated_at"] = now
-
-    _save(data)
-    return _to_workstream(record)
-
-
-def resolve(
-    session_id: str = "",
-    terminal_id: str = "",
-    artifacts: tuple[str, ...] | list[str] = (),
-) -> Workstream | None:
-    """Resolve only active session/tab bindings or explicit artifact attachments."""
-    data = _load()
-    wid = _find_workstream_id(
-        data,
+    """Create a new Workstream and make the supplied session/tab active on it."""
+    return _save_workstream(
+        _load(),
+        _new_id(),
         session_id=session_id,
         terminal_id=terminal_id,
+        state=state,
+        slug=slug,
+        cwd=cwd,
+        branch=branch,
         artifacts=_clean_artifacts(artifacts),
+        title=title,
     )
-    if not wid:
+
+
+def create_replacing_active_workstream(
+    session_id: str = "",
+    terminal_id: str = "",
+    state: str = "",
+    slug: str = "",
+    cwd: str = "",
+    branch: str = "",
+    artifacts: tuple[str, ...] | list[str] = (),
+    title: str = "",
+) -> Workstream:
+    """Create a new Workstream after removing this session/tab from active Workstreams."""
+    data = _load()
+    _remove_active_bindings(data, session_id=session_id, terminal_id=terminal_id)
+    return _save_workstream(
+        data,
+        _new_id(),
+        session_id=session_id,
+        terminal_id=terminal_id,
+        state=state,
+        slug=slug,
+        cwd=cwd,
+        branch=branch,
+        artifacts=_clean_artifacts(artifacts),
+        title=title,
+    )
+
+
+def attach_to_existing_workstream(
+    workstream_id: str,
+    session_id: str = "",
+    terminal_id: str = "",
+    state: str = "",
+    slug: str = "",
+    cwd: str = "",
+    branch: str = "",
+    artifacts: tuple[str, ...] | list[str] = (),
+    title: str = "",
+) -> Workstream | None:
+    """Attach the supplied session/tab to an explicit existing Workstream."""
+    if not workstream_id:
         return None
-    record = data.get("workstreams", {}).get(wid)
-    return _to_workstream(record) if isinstance(record, dict) else None
+    data = _load()
+    if workstream_id not in data.get("workstreams", {}):
+        return None
+    return _save_workstream(
+        data,
+        workstream_id,
+        session_id=session_id,
+        terminal_id=terminal_id,
+        state=state,
+        slug=slug,
+        cwd=cwd,
+        branch=branch,
+        artifacts=_clean_artifacts(artifacts),
+        title=title,
+    )
+
+
+def replace_active_workstream(
+    workstream_id: str,
+    session_id: str = "",
+    terminal_id: str = "",
+    state: str = "",
+    slug: str = "",
+    cwd: str = "",
+    branch: str = "",
+    artifacts: tuple[str, ...] | list[str] = (),
+    title: str = "",
+) -> Workstream | None:
+    """Move the supplied session/tab from any active Workstream to this Workstream."""
+    if not workstream_id:
+        return None
+    data = _load()
+    if workstream_id not in data.get("workstreams", {}):
+        return None
+    _remove_active_bindings(data, session_id=session_id, terminal_id=terminal_id, keep_workstream_id=workstream_id)
+    return _save_workstream(
+        data,
+        workstream_id,
+        session_id=session_id,
+        terminal_id=terminal_id,
+        state=state,
+        slug=slug,
+        cwd=cwd,
+        branch=branch,
+        artifacts=_clean_artifacts(artifacts),
+        title=title,
+    )
+
+
+def resolve_active(session_id: str = "", terminal_id: str = "") -> Workstream | None:
+    """Resolve an active session/tab binding only."""
+    data = _load()
+    wid = _find_active_workstream_id(data, session_id=session_id, terminal_id=terminal_id)
+    return _workstream_by_id(data, wid)
+
+
+def resolve_by_artifact(artifacts: tuple[str, ...] | list[str] = ()) -> Workstream | None:
+    """Resolve an explicit artifact attachment only."""
+    data = _load()
+    wid = _find_artifact_workstream_id(data, _clean_artifacts(artifacts))
+    return _workstream_by_id(data, wid)
 
 
 def deactivate(session_id: str = "", terminal_id: str = "") -> None:
@@ -139,7 +189,7 @@ def transfer_binding(old_session_id: str = "", new_session_id: str = "", termina
     if not new_session_id:
         return None
     data = _load()
-    wid = _find_workstream_id(data, session_id=old_session_id, terminal_id=terminal_id)
+    wid = _find_active_workstream_id(data, session_id=old_session_id, terminal_id=terminal_id)
     if not wid:
         return None
     record = data.get("workstreams", {}).get(wid)
@@ -154,16 +204,10 @@ def transfer_binding(old_session_id: str = "", new_session_id: str = "", termina
     return _to_workstream(record)
 
 
-def _find_workstream_id(
-    data: dict,
-    session_id: str = "",
-    terminal_id: str = "",
-    artifacts: tuple[str, ...] | list[str] = (),
-) -> str:
+def _find_active_workstream_id(data: dict, session_id: str = "", terminal_id: str = "") -> str:
     workstreams = data.get("workstreams", {})
     if not isinstance(workstreams, dict):
         return ""
-
     for wid, record in workstreams.items():
         if not isinstance(record, dict):
             continue
@@ -171,15 +215,99 @@ def _find_workstream_id(
             return wid
         if terminal_id and terminal_id in record.get("active_terminals", []):
             return wid
-
-    artifact_set = set(_clean_artifacts(artifacts))
-    if artifact_set:
-        for wid, record in workstreams.items():
-            if not isinstance(record, dict):
-                continue
-            if artifact_set.intersection(record.get("artifacts", [])):
-                return wid
     return ""
+
+
+def _find_artifact_workstream_id(data: dict, artifacts: tuple[str, ...] | list[str] = ()) -> str:
+    artifact_set = set(_clean_artifacts(artifacts))
+    if not artifact_set:
+        return ""
+    workstreams = data.get("workstreams", {})
+    if not isinstance(workstreams, dict):
+        return ""
+    for wid, record in workstreams.items():
+        if not isinstance(record, dict):
+            continue
+        if artifact_set.intersection(record.get("artifacts", [])):
+            return wid
+    return ""
+
+
+def _workstream_by_id(data: dict, workstream_id: str) -> Workstream | None:
+    if not workstream_id:
+        return None
+    record = data.get("workstreams", {}).get(workstream_id)
+    return _to_workstream(record) if isinstance(record, dict) else None
+
+
+def _save_workstream(
+    data: dict,
+    workstream_id: str,
+    session_id: str = "",
+    terminal_id: str = "",
+    state: str = "",
+    slug: str = "",
+    cwd: str = "",
+    branch: str = "",
+    artifacts: tuple[str, ...] | list[str] = (),
+    title: str = "",
+) -> Workstream:
+    workstreams = data.setdefault("workstreams", {})
+    now = time.time()
+    record = workstreams.get(workstream_id)
+    if not isinstance(record, dict):
+        record = {
+            "id": workstream_id,
+            "state": "",
+            "slug": "",
+            "last_title": "",
+            "cwd": "",
+            "branch": "",
+            "artifacts": [],
+            "active_sessions": [],
+            "active_terminals": [],
+            "created_at": now,
+            "updated_at": now,
+        }
+        workstreams[workstream_id] = record
+
+    normalized_state = _normalize_state(state) or record.get("state", "")
+    normalized_slug = workflow_model.normalize_slug(slug) or record.get("slug", "")
+    if normalized_state:
+        record["state"] = normalized_state
+    if normalized_slug:
+        record["slug"] = normalized_slug
+    if title:
+        record["last_title"] = title
+    elif normalized_state and normalized_slug:
+        record["last_title"] = f"{normalized_state}-{normalized_slug}"
+    if cwd:
+        record["cwd"] = cwd
+    if branch:
+        record["branch"] = branch
+    _append_unique(record.setdefault("active_sessions", []), session_id)
+    _append_unique(record.setdefault("active_terminals", []), terminal_id)
+    for artifact in _clean_artifacts(artifacts):
+        _append_unique(record.setdefault("artifacts", []), artifact)
+    record["updated_at"] = now
+
+    _save(data)
+    return _to_workstream(record)
+
+
+def _remove_active_bindings(data: dict, session_id: str = "", terminal_id: str = "", keep_workstream_id: str = "") -> None:
+    if not session_id and not terminal_id:
+        return
+    for wid, record in data.get("workstreams", {}).items():
+        if wid == keep_workstream_id or not isinstance(record, dict):
+            continue
+        changed = False
+        if session_id and _remove_value(record.setdefault("active_sessions", []), session_id):
+            changed = True
+        if terminal_id and _remove_value(record.setdefault("active_terminals", []), terminal_id):
+            changed = True
+        if changed:
+            record["updated_at"] = time.time()
 
 
 def _load() -> dict:

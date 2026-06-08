@@ -1,6 +1,7 @@
 import json
 import os
 import pathlib
+import subprocess
 import unittest
 
 from helpers import assert_hook_ok, hook_test_env, read_log, run_hook
@@ -54,8 +55,6 @@ class TabtitleWorkflowHookTests(unittest.TestCase):
                     "cwd": str(root / "project"),
                     "hook_event_name": "UserPromptSubmit",
                     "prompt": "Can you sanity check MIN-180 before I turn it into a plan?",
-                    "selected_skills": [],
-                    "branch_name": "feature/branch-should-not-matter",
                 },
                 env,
             )
@@ -78,7 +77,7 @@ class TabtitleWorkflowHookTests(unittest.TestCase):
             import workflow_state
             from unittest.mock import patch
             with patch.dict(os.environ, env, clear=True):
-                workflow_state.attach(
+                workflow_state.create_workstream(
                     session_id="session-check",
                     terminal_id="term-test-1",
                     state="check",
@@ -92,7 +91,6 @@ class TabtitleWorkflowHookTests(unittest.TestCase):
                     "cwd": str(root / "project"),
                     "hook_event_name": "UserPromptSubmit",
                     "prompt": "thanks",
-                    "selected_skills": [],
                 },
                 env,
             )
@@ -101,6 +99,43 @@ class TabtitleWorkflowHookTests(unittest.TestCase):
             self.assertEqual((dirs["debounce"] / "session-check").read_text(), "123\n🌀 check-canonical-workflow-titles")
             self.assertIn("workflow -> keep ('check-canonical-workflow-titles')", read_log(root))
             self.assertNotIn("tabtitle", calls.read_text())
+
+    def test_backward_explicit_skill_signal_starts_new_active_workstream(self):
+        with hook_test_env() as (root, env, dirs):
+            install_fake_llm(root, env, transition="NONE", slug="new-product-brief")
+            (dirs["terminal"] / "session-plan").write_text("term-test-1")
+            (dirs["debounce"] / "session-plan").write_text("123\n🌀 plan-old-plan")
+
+            import sys
+            sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "hooks"))
+            import workflow_state
+            from unittest.mock import patch
+            with patch.dict(os.environ, env, clear=True):
+                original = workflow_state.create_workstream(
+                    session_id="session-plan",
+                    terminal_id="term-test-1",
+                    state="plan",
+                    slug="old-plan",
+                )
+
+            result = run_hook(
+                "tabtitle-hook.py",
+                {
+                    "session_id": "session-plan",
+                    "cwd": str(root / "project"),
+                    "hook_event_name": "UserPromptSubmit",
+                    "prompt": '<skill name="prep" location="/tmp/prep-skill">Prepare a new product brief</skill>',
+                },
+                env,
+            )
+
+            assert_hook_ok(self, result)
+            self.assertEqual((dirs["debounce"] / "session-plan").read_text().splitlines()[1], "🌀 prep-new-product-brief")
+            with patch.dict(os.environ, env, clear=True):
+                active = workflow_state.resolve_active(session_id="session-plan")
+                self.assertEqual(active.slug, "new-product-brief")
+                self.assertNotEqual(active.id, original.id)
+            self.assertIn("workflow -> 🌀 renamed ('prep-new-product-brief')", read_log(root))
 
     def test_cook_plan_metadata_sets_canonical_cook_title_once_without_slug_generation(self):
         with hook_test_env() as (root, env, dirs):
@@ -134,7 +169,6 @@ class TabtitleWorkflowHookTests(unittest.TestCase):
                     "cwd": str(root / "project"),
                     "hook_event_name": "UserPromptSubmit",
                     "prompt": "Implement this plan now in the current repository. The plan content is included below.",
-                    "selected_skills": [],
                     "session_file": str(session_file),
                     "transcript_path": str(session_file),
                 },
@@ -161,7 +195,6 @@ class TabtitleWorkflowHookTests(unittest.TestCase):
                     "cwd": str(root / "project"),
                     "hook_event_name": "UserPromptSubmit",
                     "prompt": "Tell me about a small unrelated terminal customization idea.",
-                    "selected_skills": [],
                 },
                 env,
             )
@@ -169,6 +202,27 @@ class TabtitleWorkflowHookTests(unittest.TestCase):
             assert_hook_ok(self, result)
             self.assertEqual((dirs["debounce"] / "session-ordinary").read_text().splitlines()[1], "🌀 ordinary-pi-title")
             self.assertEqual(call_tags(calls), ["workflow-transition", "tabtitle"])
+
+    def test_explicit_workflow_signal_without_slug_does_not_fall_through_to_ordinary_title(self):
+        with hook_test_env() as (root, env, dirs):
+            calls = install_fake_llm(root, env, transition="NONE", slug="")
+            (dirs["terminal"] / "session-plan-noslug").write_text("term-test-1")
+
+            result = run_hook(
+                "tabtitle-hook.py",
+                {
+                    "session_id": "session-plan-noslug",
+                    "cwd": str(root / "project"),
+                    "hook_event_name": "UserPromptSubmit",
+                    "prompt": '<skill name="plan" location="/tmp/skill-plan">Plan this work</skill>',
+                },
+                env,
+            )
+
+            assert_hook_ok(self, result)
+            self.assertFalse((dirs["debounce"] / "session-plan-noslug").exists())
+            self.assertEqual(call_tags(calls), ["tabtitle"])
+            self.assertIn("workflow -> handled without title", read_log(root))
 
     def test_ordinary_pi_title_with_workflow_prefix_does_not_enter_canonical_mode(self):
         with hook_test_env() as (root, env, dirs):
@@ -183,7 +237,6 @@ class TabtitleWorkflowHookTests(unittest.TestCase):
                     "cwd": str(root / "project"),
                     "hook_event_name": "UserPromptSubmit",
                     "prompt": "Implement the current plan details after checking the latest notes.",
-                    "selected_skills": [],
                 },
                 env,
             )
@@ -205,7 +258,7 @@ class TabtitleWorkflowHookTests(unittest.TestCase):
                     "cwd": str(root / "project"),
                     "hook_event_name": "UserPromptSubmit",
                     "prompt": '<skill name="review" location="/tmp/review/SKILL.md">Review the branch</skill>',
-                    "selected_skills": ["review"],
+                    "selected_skills": ["cook"],
                 },
                 env,
             )
@@ -213,6 +266,30 @@ class TabtitleWorkflowHookTests(unittest.TestCase):
             assert_hook_ok(self, result)
             self.assertEqual((dirs["debounce"] / "session-review").read_text().splitlines()[1], "🌀 review-review-linear-skill-changes")
             self.assertIn("workflow -> 🌀 renamed ('review-review-linear-skill-changes')", read_log(root))
+
+    def test_cook_skill_uses_python_branch_fallback_without_payload_branch_name(self):
+        with hook_test_env() as (root, env, dirs):
+            project = root / "project"
+            project.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+            subprocess.run(["git", "checkout", "-q", "-b", "feature/canonical-workflow-titles"], cwd=project, check=True)
+            calls = install_fake_llm(root, env, transition="NONE", slug="should-not-be-used")
+            (dirs["terminal"] / "session-cook-branch").write_text("term-test-1")
+
+            result = run_hook(
+                "tabtitle-hook.py",
+                {
+                    "session_id": "session-cook-branch",
+                    "cwd": str(project),
+                    "hook_event_name": "UserPromptSubmit",
+                    "prompt": '<skill name="cook" location="/tmp/cook/SKILL.md">Implement the branch</skill>',
+                },
+                env,
+            )
+
+            assert_hook_ok(self, result)
+            self.assertEqual((dirs["debounce"] / "session-cook-branch").read_text().splitlines()[1], "🌀 cook-canonical-workflow-titles")
+            self.assertEqual(call_tags(calls), [])
 
     def test_claude_payload_ignores_workflow_skills_and_uses_ordinary_slug_flow(self):
         with hook_test_env(namespace="claude") as (root, env, dirs):

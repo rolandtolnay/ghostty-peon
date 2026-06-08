@@ -117,7 +117,7 @@ class PiSessionEndHookTests(unittest.TestCase):
         with hook_test_env(fake_term_id=term_id) as (_root, env, dirs):
             self.seed_session(dirs, session_id=session_id, term_id=term_id)
             with patch.dict(os.environ, env, clear=True):
-                original = workflow_state.attach(
+                original = workflow_state.create_workstream(
                     session_id=session_id,
                     terminal_id=term_id,
                     state="plan",
@@ -137,9 +137,9 @@ class PiSessionEndHookTests(unittest.TestCase):
 
             assert_hook_ok(self, result)
             with patch.dict(os.environ, env, clear=True):
-                self.assertIsNone(workflow_state.resolve(session_id=session_id))
-                self.assertIsNone(workflow_state.resolve(terminal_id=term_id))
-                self.assertEqual(workflow_state.resolve(artifacts=(artifact,)).id, original.id)
+                self.assertIsNone(workflow_state.resolve_active(session_id=session_id))
+                self.assertIsNone(workflow_state.resolve_active(terminal_id=term_id))
+                self.assertEqual(workflow_state.resolve_by_artifact((artifact,)).id, original.id)
 
 
 if __name__ == "__main__":

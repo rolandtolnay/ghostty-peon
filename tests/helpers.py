@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 from contextlib import contextmanager
+from unittest.mock import patch
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 HOOKS_DIR = REPO_ROOT / "hooks"
@@ -87,6 +88,28 @@ def assert_hook_ok(testcase, result):
         0,
         msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
     )
+
+
+def seed_workflow_session(dirs, env, session_id, terminal_id, state, slug, emoji="🌿"):
+    """Seed matching terminal, debounce, and workflow state for a canonical Pi title."""
+    canonical_title = f"{state}-{slug}"
+    visible_title = f"{emoji} {canonical_title}"
+    (dirs["terminal"] / session_id).write_text(terminal_id)
+    (dirs["debounce"] / session_id).write_text(f"123\n{visible_title}\n")
+
+    if str(HOOKS_DIR) not in sys.path:
+        sys.path.insert(0, str(HOOKS_DIR))
+    import workflow_state
+
+    with patch.dict(os.environ, env, clear=True):
+        workflow_state.create_workstream(
+            session_id=session_id,
+            terminal_id=terminal_id,
+            state=state,
+            slug=slug,
+            title=canonical_title,
+        )
+    return visible_title
 
 
 def read_log(root):

@@ -1,5 +1,4 @@
 // Managed by ghostty-peon install.js. Source: pi-extension/event-mapping.ts
-import { execFileSync } from "node:child_process";
 import type { AgentEndEvent, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export type PermissionEvent = {
@@ -21,84 +20,7 @@ export function basePayload(ctx: ExtensionContext, id = sessionId(ctx)) {
 	};
 }
 
-const SKILL_ENVELOPE_RE = /<skill\b[^>]*\bname=["']([^"']+)["'][^>]*>/gi;
-const BRACKET_COMMAND_RE = /^\s*\[\/([\w:_-]+)\](?:\s+([^\n]*))?\s*$/gm;
-const SLASH_COMMAND_RE = /^\s*\/([\w:_-]+)(?:\s+([^\n]*))?\s*$/gm;
-const LIFECYCLE_COMMANDS = new Set([
-	"clear",
-	"exit",
-	"compact",
-	"resume",
-	"new",
-	"fork",
-	"clone",
-	"tree",
-	"init",
-	"login",
-	"logout",
-	"status",
-	"config",
-	"help",
-	"model",
-	"settings",
-	"session",
-	"copy",
-	"export",
-	"share",
-	"reload",
-	"hotkeys",
-	"changelog",
-	"quit",
-]);
-
-export function selectedSkillNames(event: { prompt?: unknown; systemPromptOptions?: unknown }): string[] {
-	const prompt = typeof event.prompt === "string" ? event.prompt : "";
-	return invokedSkillNames(prompt);
-}
-
-function invokedSkillNames(prompt: string): string[] {
-	const names: string[] = [];
-	const seen = new Set<string>();
-	const add = (raw: string) => {
-		const name = normalizeSkillName(raw);
-		if (!name || seen.has(name) || LIFECYCLE_COMMANDS.has(name)) return;
-		seen.add(name);
-		names.push(name);
-	};
-
-	for (const match of prompt.matchAll(SKILL_ENVELOPE_RE)) add(match[1]);
-	for (const match of prompt.matchAll(BRACKET_COMMAND_RE)) add(match[1]);
-	for (const match of prompt.matchAll(SLASH_COMMAND_RE)) add(match[1]);
-	return names;
-}
-
-function normalizeSkillName(name: string): string {
-	let normalized = name.trim().replace(/^\/+/, "").toLowerCase();
-	if (normalized.startsWith("skill:")) normalized = normalized.slice("skill:".length);
-	return normalized.trim();
-}
-
-export function currentBranchName(ctx: ExtensionContext): string {
-	try {
-		const cwd = (ctx as { cwd?: unknown }).cwd;
-		if (typeof cwd !== "string" || !cwd) return "";
-		const branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
-			cwd,
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "ignore"],
-			timeout: 1000,
-		}).trim();
-		return branch && branch !== "HEAD" ? branch : "";
-	} catch {
-		return "";
-	}
-}
-
-export function beforeAgentStartPayload(
-	event: { prompt?: string; images?: unknown; systemPromptOptions?: unknown },
-	ctx: ExtensionContext,
-	id = sessionId(ctx),
-) {
+export function beforeAgentStartPayload(event: { prompt?: string; images?: unknown }, ctx: ExtensionContext, id = sessionId(ctx)) {
 	const imageCount = Array.isArray(event.images) ? event.images.length : 0;
 	const sessionFile = ctx.sessionManager.getSessionFile() || "";
 	return {
@@ -107,8 +29,6 @@ export function beforeAgentStartPayload(
 		prompt: typeof event.prompt === "string" ? event.prompt : "",
 		image_count: imageCount,
 		transcript_path: sessionFile,
-		selected_skills: selectedSkillNames(event),
-		branch_name: currentBranchName(ctx),
 	};
 }
 
