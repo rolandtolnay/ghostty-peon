@@ -25,6 +25,90 @@ def terminal_id_path(session_id: str) -> str:
     return os.path.join(terminal_id_dir(), session_id)
 
 
+def _default_terminal_id_dir(namespace: str) -> str:
+    return f"/tmp/{namespace}-tabterminal"
+
+
+def _peer_terminal_id_dirs() -> list[str]:
+    """Return peer runtime terminal-id dirs that may already own a tab.
+
+    Claude and Pi keep separate state namespaces, but Ghostty terminal UUIDs are
+    global. A tab captured by one runtime must therefore block plain startup
+    capture by the other runtime too.
+    """
+    configured = os.environ.get("GHOSTTY_PEON_PEER_TERMINAL_ID_DIRS", "").strip()
+    if configured:
+        return [path for path in configured.split(os.pathsep) if path]
+
+    current = runtime_config.namespace()
+    current_dir = os.path.abspath(terminal_id_dir())
+    default_current_dir = os.path.abspath(_default_terminal_id_dir(current))
+
+    # Isolated tests and explicit embedders often override the current terminal
+    # dir; require them to opt into peer dirs so they do not accidentally read
+    # or mutate real /tmp state. Production adapters may still set the default
+    # path explicitly, which should keep cross-runtime ownership checks enabled.
+    if "GHOSTTY_PEON_TERMINAL_ID_DIR" in os.environ and current_dir != default_current_dir:
+        return []
+
+    return [_default_terminal_id_dir(namespace) for namespace in ("claude", "pi") if namespace != current]
+
+
+def _terminal_owner_dirs() -> list[str]:
+    seen: set[str] = set()
+    dirs: list[str] = []
+    for directory in [terminal_id_dir(), *_peer_terminal_id_dirs()]:
+        normalized = os.path.abspath(directory)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        dirs.append(directory)
+    return dirs
+
+
+def _namespace_label(directory: str) -> str:
+    normalized = os.path.abspath(directory)
+    current_dir = os.path.abspath(terminal_id_dir())
+    if normalized == current_dir:
+        return runtime_config.namespace()
+    for namespace in ("claude", "pi"):
+        if normalized == os.path.abspath(_default_terminal_id_dir(namespace)):
+            return namespace
+    basename = os.path.basename(normalized).lower()
+    for namespace in ("claude", "pi"):
+        if basename.startswith(namespace):
+            return namespace
+    return "peer"
+
+
+def _owner_display(directory: str, session_id: str) -> str:
+    if os.path.abspath(directory) == os.path.abspath(terminal_id_dir()):
+        return session_id
+    return f"{_namespace_label(directory)}:{session_id}"
+
+
+def _find_terminal_owner(term_id: str, exclude_session: str) -> tuple[str, str, str] | None:
+    """Return (directory, session_id, display) for another owner of term_id."""
+    current_dir = os.path.abspath(terminal_id_dir())
+    for directory in _terminal_owner_dirs():
+        directory_abs = os.path.abspath(directory)
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            continue
+        for name in names:
+            if directory_abs == current_dir and name == exclude_session:
+                continue
+            try:
+                with open(os.path.join(directory, name)) as f:
+                    existing = f.read().strip()
+                if existing == term_id:
+                    return directory, name, _owner_display(directory, name)
+            except OSError:
+                continue
+    return None
+
+
 def save_terminal_id(session_id: str, term_id: str) -> None:
     """Persist a known Ghostty terminal UUID for a session."""
     os.makedirs(terminal_id_dir(), exist_ok=True)
@@ -60,33 +144,43 @@ def capture_terminal_id(session_id: str) -> str | None:
 
 
 def is_terminal_owned(term_id: str, exclude_session: str) -> str | None:
-    """Return another session id that owns this terminal, if any."""
+    """Return another session id that owns this terminal, if any.
+
+    Ownership is checked across Claude/Pi terminal-id namespaces because
+    Ghostty terminal UUIDs are global even when hook state is runtime-scoped.
+    Peer-runtime owners are returned as ``"namespace:session_id"``.
+    """
+    owner = _find_terminal_owner(term_id, exclude_session)
+    return owner[2] if owner else None
+
+
+def clear_terminal_owner(term_id: str, exclude_session: str) -> str | None:
+    """Remove a same-runtime owner of this terminal and return it.
+
+    Peer runtime ownership is a guardrail, not a replacement target: a Pi
+    replacement flow must not delete Claude's terminal ownership, and vice versa.
+    """
+    current_dir = terminal_id_dir()
     try:
-        for name in os.listdir(terminal_id_dir()):
+        for name in os.listdir(current_dir):
             if name == exclude_session:
                 continue
             try:
-                with open(terminal_id_path(name)) as f:
+                path = os.path.join(current_dir, name)
+                with open(path) as f:
                     existing = f.read().strip()
-                if existing == term_id:
-                    return name
+                if existing != term_id:
+                    continue
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+                return name
             except OSError:
                 continue
     except OSError:
         pass
     return None
-
-
-def clear_terminal_owner(term_id: str, exclude_session: str) -> str | None:
-    """Remove another session's ownership of this terminal and return it."""
-    owner = is_terminal_owned(term_id, exclude_session)
-    if not owner:
-        return None
-    try:
-        os.remove(terminal_id_path(owner))
-    except OSError:
-        pass
-    return owner
 
 
 def get_terminal_id(session_id: str) -> str | None:

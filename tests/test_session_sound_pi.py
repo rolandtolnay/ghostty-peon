@@ -51,6 +51,32 @@ class PiSessionSoundHookTests(unittest.TestCase):
             self.assertEqual((dirs["terminal"] / "fork-session").read_text(), "term-owned")
             self.assertIn("fork -> replaced terminal owner 'old-session'", read_log(root))
 
+    def test_fork_does_not_replace_peer_runtime_terminal_owner(self):
+        with hook_test_env(fake_term_id="term-claude-owned") as (root, env, dirs):
+            claude_terminal_dir = root / "claude-terminal"
+            claude_terminal_dir.mkdir()
+            env["GHOSTTY_PEON_PEER_TERMINAL_ID_DIRS"] = str(claude_terminal_dir)
+            (claude_terminal_dir / "claude-session").write_text("term-claude-owned")
+
+            result = run_hook(
+                "session-sound-hook.py",
+                {
+                    "session_id": "fork-session",
+                    "cwd": str(root / "project"),
+                    "source": "fork",
+                    "pi_reason": "fork",
+                    "session_file": "/tmp/fork-session.jsonl",
+                    "previous_session_file": "/tmp/old-session.jsonl",
+                },
+                env,
+            )
+
+            assert_hook_ok(self, result)
+            self.assertEqual((claude_terminal_dir / "claude-session").read_text(), "term-claude-owned")
+            self.assertFalse((dirs["terminal"] / "fork-session").exists())
+            self.assertFalse((dirs["session_index"] / "fork-session").exists())
+            self.assertIn("subagent detected (terminal owned by claude:claude-session)", read_log(root))
+
     def test_pi_new_replacement_claims_outgoing_terminal_not_focused_tab(self):
         with hook_test_env(fake_term_id="term-focused-other") as (root, env, dirs):
             old_session = "old-session"

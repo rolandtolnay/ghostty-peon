@@ -47,6 +47,30 @@ class ClaudeSubagentGuardTests(unittest.TestCase):
             assert_hook_ok(self, result)
             self.assertEqual((dirs["terminal"] / "main-agent-session").read_text(), "term-main-agent")
 
+    def test_session_start_does_not_steal_pi_owned_terminal(self):
+        with hook_test_env(namespace="claude", fake_term_id="term-pi-owned") as (root, env, dirs):
+            pi_terminal_dir = root / "pi-terminal"
+            pi_terminal_dir.mkdir()
+            env["GHOSTTY_PEON_PEER_TERMINAL_ID_DIRS"] = str(pi_terminal_dir)
+            (pi_terminal_dir / "pi-session").write_text("term-pi-owned")
+
+            result = run_hook(
+                "session-sound-hook.py",
+                {
+                    "session_id": "claude-session",
+                    "cwd": str(root / "project"),
+                    "hook_event_name": "SessionStart",
+                    "source": "startup",
+                },
+                env,
+            )
+
+            assert_hook_ok(self, result)
+            self.assertEqual((pi_terminal_dir / "pi-session").read_text(), "term-pi-owned")
+            self.assertFalse((dirs["terminal"] / "claude-session").exists())
+            self.assertFalse((dirs["session_index"] / "claude-session").exists())
+            self.assertIn("subagent detected (terminal owned by pi:pi-session)", read_log(root))
+
     def test_session_start_exports_nested_hook_guard_for_child_claude_processes(self):
         with hook_test_env(namespace="claude", fake_term_id="term-parent") as (root, env, dirs):
             env_file = root / "claude-env.sh"

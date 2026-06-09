@@ -164,8 +164,9 @@ def capture_and_claim(label: str, replace_existing_owner: bool = False) -> str |
 
     if _namespace() == "pi" and replace_existing_owner:
         replaced = clear_terminal_owner(term_id, session_id)
-        log(session_id, "session", f"{label} -> replaced terminal owner {replaced!r}")
-        return term_id
+        if replaced:
+            log(session_id, "session", f"{label} -> replaced terminal owner {replaced!r}")
+            return term_id
 
     # Plain startup keeps the nested-session protection to avoid stealing a
     # parent Pi/Claude session's terminal ownership.

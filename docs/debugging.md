@@ -380,6 +380,28 @@ Each session's Ghostty terminal UUID is captured at `SessionStart` and persisted
 
 If no UUID is available for a session, `set_tab_title()` refuses to operate (logs `SKIPPED: no term_id, refusing unsafe fallback`) to prevent accidentally renaming the wrong tab.
 
+When diagnosing wrong-tab updates, compare Claude and Pi terminal ownership together. Ghostty terminal UUIDs are global even though hook state is runtime-scoped, so a bad capture can show up as the same UUID in both namespaces:
+
+```sh
+for runtime in claude pi; do
+  echo "[$runtime]"
+  for f in /tmp/$runtime-tabterminal/*; do
+    [ -e "$f" ] || continue
+    printf '%s %s\n' "${f##*/}" "$(cat "$f")"
+  done
+done
+```
+
+If a live session has already captured the wrong UUID, remove only that session's terminal-id file so later hooks skip title mutation instead of continuing to update the wrong tab:
+
+```sh
+rm /tmp/claude-tabterminal/<session_id>
+# or
+rm /tmp/pi-tabterminal/<session_id>
+```
+
+Then restart the affected agent from the correct Ghostty tab to capture a fresh UUID. Do not clear the peer runtime's terminal-id file unless that peer session is known to be dead; stale peer state can block capture, but deleting live peer state reopens the wrong-tab failure mode.
+
 ### Validation Commands and Gotchas
 
 Tests use `tests/helpers.py` as a top-level import, so direct module runs need `PYTHONPATH=tests`:
