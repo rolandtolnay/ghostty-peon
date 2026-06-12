@@ -137,6 +137,66 @@ class TabtitleWorkflowHookTests(unittest.TestCase):
                 self.assertNotEqual(active.id, original.id)
             self.assertIn("workflow -> 🌀 renamed ('prep-new-product-brief')", read_log(root))
 
+    def test_plan_skill_uses_recent_transcript_prd_over_placeholder_templates(self):
+        with hook_test_env() as (root, env, dirs):
+            calls = install_fake_llm(root, env, transition="NONE", slug="should-not-be-used")
+            session_file = root / "session-plan.jsonl"
+            session_file.write_text(
+                json.dumps(
+                    {
+                        "type": "message",
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "PRD created:\n\n`etc/prd/source-based-session-footprint.md`",
+                                }
+                            ],
+                        },
+                    }
+                )
+                + "\n"
+            )
+            (dirs["terminal"] / "session-plan-prd").write_text("term-test-1")
+            (dirs["debounce"] / "session-plan-prd").write_text("123\n🌀 prep-sanity-check-min-201")
+
+            import sys
+            sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "hooks"))
+            import workflow_state
+            from unittest.mock import patch
+            with patch.dict(os.environ, env, clear=True):
+                workflow_state.create_workstream(
+                    session_id="session-plan-prd",
+                    terminal_id="term-test-1",
+                    state="prep",
+                    slug="sanity-check-min-201",
+                )
+
+            result = run_hook(
+                "tabtitle-hook.py",
+                {
+                    "session_id": "session-plan-prd",
+                    "cwd": str(root / "project"),
+                    "hook_event_name": "UserPromptSubmit",
+                    "prompt": (
+                        '<skill name="plan" location="/tmp/plan/SKILL.md">\n'
+                        '## Context\n'
+                        '> **Read first:** `etc/prd/<slug>.md` contains requirements.\n'
+                        'Plans are saved to `~/.pi/plans/<project-folder>/<slug>.md`.\n'
+                        '</skill>'
+                    ),
+                    "transcript_path": str(session_file),
+                    "session_file": str(session_file),
+                },
+                env,
+            )
+
+            assert_hook_ok(self, result)
+            self.assertEqual((dirs["debounce"] / "session-plan-prd").read_text().splitlines()[1], "🌀 plan-source-based-session-footprint")
+            self.assertEqual(call_tags(calls), [])
+            self.assertIn("workflow -> 🌀 renamed ('plan-source-based-session-footprint')", read_log(root))
+
     def test_cook_plan_metadata_sets_canonical_cook_title_once_without_slug_generation(self):
         with hook_test_env() as (root, env, dirs):
             calls = install_fake_llm(root, env, transition="NONE", slug="should-not-be-used")

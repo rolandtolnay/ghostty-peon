@@ -61,6 +61,7 @@ _SKILL_ENVELOPE_RE = re.compile(r"<skill\b[^>]*\bname=[\"']([^\"']+)[\"'][^>]*>"
 _COMMAND_NAME = r"[\w:_-]+"
 _BRACKET_COMMAND_RE = re.compile(rf"(?m)^\s*\[/({_COMMAND_NAME})\](?:[ \t]+([^\n]*))?\s*$")
 _SLASH_COMMAND_RE = re.compile(rf"(?m)^\s*/({_COMMAND_NAME})(?:[ \t]+([^\n]*))?\s*$")
+_PLACEHOLDER_PATH_RE = re.compile(r"(?:<[^/\\]+>|\{[^/\\]+\})")
 _LIFECYCLE_COMMANDS = {
     "clear",
     "exit",
@@ -314,4 +315,7 @@ def _markdown_paths(text: str) -> list[str]:
 
 
 def _clean_path_token(path: str) -> str:
-    return path.strip().strip("`'\"()[],.")
+    cleaned = path.strip().strip("`'\"()[],.")
+    if _PLACEHOLDER_PATH_RE.search(cleaned):
+        return ""
+    return cleaned

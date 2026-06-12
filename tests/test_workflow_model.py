@@ -89,6 +89,23 @@ class WorkflowModelTests(unittest.TestCase):
         self.assertEqual(decision.slug, "canonical-pi-workflow-titles")
         self.assertEqual(decision.canonical_title, "plan-canonical-pi-workflow-titles")
 
+    def test_placeholder_artifact_templates_do_not_override_inherited_slug(self):
+        prompt = "Use etc/prd/<slug>.md and ~/.pi/plans/<project-folder>/<slug>.md as templates."
+
+        self.assertEqual(workflow_model.extract_artifacts(prompt), [])
+
+        decision = workflow_model.decide(
+            workflow_model.WorkflowContext(
+                selected_skills=("plan",),
+                prompt=prompt,
+                inherited_slug="sanity-check-min-201",
+            )
+        )
+
+        self.assertEqual(decision.state, "plan")
+        self.assertEqual(decision.slug, "sanity-check-min-201")
+        self.assertEqual(decision.canonical_title, "plan-sanity-check-min-201")
+
     def test_cook_keeps_inherited_slug_before_branch_fallback(self):
         decision = workflow_model.decide(
             workflow_model.WorkflowContext(

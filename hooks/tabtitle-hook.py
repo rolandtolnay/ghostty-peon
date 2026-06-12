@@ -178,6 +178,7 @@ def workflow_artifact_candidates(data: dict, prompt: str, cook_metadata: dict | 
             if isinstance(value, str):
                 candidates.append(value)
     candidates.extend(artifact.path for artifact in workflow_model.extract_artifacts(prompt))
+    candidates.extend(transcript_artifact_candidates(data))
     seen = set()
     cleaned: list[str] = []
     for candidate in candidates:
@@ -185,6 +186,64 @@ def workflow_artifact_candidates(data: dict, prompt: str, cook_metadata: dict | 
             seen.add(candidate)
             cleaned.append(candidate)
     return cleaned
+
+
+def transcript_artifact_candidates(data: dict, max_entries: int = 20) -> list[str]:
+    """Return workflow artifact paths mentioned in recent transcript entries."""
+    session_file = data.get("transcript_path") or data.get("session_file")
+    if not isinstance(session_file, str) or not session_file:
+        return []
+    try:
+        with open(session_file) as f:
+            lines = f.readlines()[-max_entries:]
+    except OSError:
+        return []
+
+    candidates: list[str] = []
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        for text in transcript_entry_texts(entry):
+            candidates.extend(artifact.path for artifact in workflow_model.extract_artifacts(text))
+    return candidates
+
+
+def transcript_entry_texts(entry: object) -> list[str]:
+    if not isinstance(entry, dict):
+        return []
+    texts: list[str] = []
+
+    message = entry.get("message")
+    if isinstance(message, dict):
+        texts.extend(content_texts(message.get("content")))
+
+    texts.extend(content_texts(entry.get("content")))
+
+    data = entry.get("data")
+    if isinstance(data, dict):
+        for key in ("readFiles", "writtenFiles", "workflow_artifacts", "artifact_candidates"):
+            value = data.get(key)
+            if isinstance(value, list):
+                texts.extend(item for item in value if isinstance(item, str))
+
+    return texts
+
+
+def content_texts(content: object) -> list[str]:
+    if isinstance(content, str):
+        return [content]
+    if not isinstance(content, list):
+        return []
+    texts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        text = block.get("text")
+        if isinstance(text, str):
+            texts.append(text)
+    return texts
 
 
 def cook_plan_metadata(data: dict) -> dict | None:
