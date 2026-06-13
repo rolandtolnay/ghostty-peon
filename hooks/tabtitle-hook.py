@@ -159,7 +159,12 @@ def canonical_slug_from_title(title: str) -> tuple[str, str]:
     return "", ""
 
 
-def workflow_artifact_candidates(data: dict, prompt: str, cook_metadata: dict | None = None) -> list[str]:
+def workflow_artifact_candidates(
+    data: dict,
+    prompt: str,
+    cook_metadata: dict | None = None,
+    include_transcript: bool = True,
+) -> list[str]:
     """Collect observable artifact path candidates from hook payload metadata."""
     candidates: list[str] = []
     for key in ("workflow_artifacts", "artifact_candidates"):
@@ -182,7 +187,8 @@ def workflow_artifact_candidates(data: dict, prompt: str, cook_metadata: dict | 
             if isinstance(value, str):
                 candidates.append(value)
     candidates.extend(artifact.path for artifact in workflow_model.extract_artifacts(prompt))
-    candidates.extend(transcript_artifact_candidates(data))
+    if include_transcript:
+        candidates.extend(transcript_artifact_candidates(data))
     seen = set()
     cleaned: list[str] = []
     for candidate in candidates:
@@ -733,10 +739,22 @@ def maybe_apply_canonical_workflow(
     if cook_metadata and "cook-plan" not in selected_skills:
         selected_skills = (*selected_skills, "cook-plan")
     signal_state = workflow_model.deterministic_state(selected_skills)
-    artifact_candidates = workflow_artifact_candidates(data, prompt, cook_metadata)
+    artifact_candidates = workflow_artifact_candidates(data, prompt, cook_metadata, include_transcript=False)
     has_explicit_signal = bool(signal_state or artifact_candidates)
     term_id = get_terminal_id(session_id) or ""
     active_resolved = workflow_state.resolve_active(session_id=session_id, terminal_id=term_id)
+    if not (
+        active_resolved
+        and active_resolved.state == workflow_model.CHECK
+        and signal_state == workflow_model.PLAN
+        and not artifact_candidates
+    ):
+        seen_artifacts = set(artifact_candidates)
+        for candidate in transcript_artifact_candidates(data):
+            if candidate not in seen_artifacts:
+                seen_artifacts.add(candidate)
+                artifact_candidates.append(candidate)
+        has_explicit_signal = bool(signal_state or artifact_candidates)
     artifact_resolved = workflow_state.resolve_by_artifact(tuple(artifact_candidates)) if artifact_candidates else None
     starts_new_workstream = bool(
         active_resolved

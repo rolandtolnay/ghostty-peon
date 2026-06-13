@@ -286,6 +286,75 @@ class TabtitleWorkflowHookTests(unittest.TestCase):
             self.assertNotIn("Verbose plan-quick instructions", transition_prompt)
             self.assertNotIn("<skill", transition_prompt)
 
+    def test_plan_quick_from_active_check_ignores_stale_transcript_artifact(self):
+        with hook_test_env() as (root, env, dirs):
+            calls = install_fake_llm(root, env, transition="NONE", slug="should-not-be-used")
+            session_file = root / "session-check-to-plan.jsonl"
+            session_file.write_text(
+                json.dumps(
+                    {
+                        "type": "tool_result",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Unrelated code fixture mentions `etc/prd/source-based-session-footprint.md`.",
+                            }
+                        ],
+                    }
+                )
+                + "\n"
+            )
+            (dirs["terminal"] / "session-check-to-plan").write_text("term-test-1")
+            (dirs["debounce"] / "session-check-to-plan").write_text("123\n🌿 check-investigate-question-tool-forwarding")
+
+            import sys
+            sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "hooks"))
+            import workflow_state
+            from unittest.mock import patch
+            with patch.dict(os.environ, env, clear=True):
+                active = workflow_state.create_workstream(
+                    session_id="session-check-to-plan",
+                    terminal_id="term-test-1",
+                    state="check",
+                    slug="investigate-question-tool-forwarding",
+                )
+                stale = workflow_state.create_workstream(
+                    state="plan",
+                    slug="source-based-session-footprint",
+                    artifacts=("etc/prd/source-based-session-footprint.md",),
+                )
+
+            result = run_hook(
+                "tabtitle-hook.py",
+                {
+                    "session_id": "session-check-to-plan",
+                    "cwd": str(root / "project"),
+                    "hook_event_name": "UserPromptSubmit",
+                    "prompt": (
+                        '<skill name="plan-quick" location="/tmp/plan-quick/SKILL.md">\n'
+                        "<user-request>Turn that sanity check into an implementation plan.</user-request>\n"
+                        "<skill-instructions>Validate agreed changes against the codebase.</skill-instructions>\n"
+                        "</skill>"
+                    ),
+                    "transcript_path": str(session_file),
+                    "session_file": str(session_file),
+                },
+                env,
+            )
+
+            assert_hook_ok(self, result)
+            self.assertEqual(
+                (dirs["debounce"] / "session-check-to-plan").read_text().splitlines()[1],
+                "🌀 plan-investigate-question-tool-forwarding",
+            )
+            self.assertEqual(call_tags(calls), [])
+            with patch.dict(os.environ, env, clear=True):
+                resolved = workflow_state.resolve_active(session_id="session-check-to-plan")
+                self.assertEqual(resolved.id, active.id)
+                self.assertEqual(resolved.slug, "investigate-question-tool-forwarding")
+                self.assertEqual(workflow_state.resolve_by_artifact(("etc/prd/source-based-session-footprint.md",)).id, stale.id)
+            self.assertIn("workflow -> 🌀 renamed ('plan-investigate-question-tool-forwarding')", read_log(root))
+
     def test_plan_skill_uses_recent_transcript_prd_over_placeholder_templates(self):
         with hook_test_env() as (root, env, dirs):
             calls = install_fake_llm(root, env, transition="NONE", slug="should-not-be-used")
