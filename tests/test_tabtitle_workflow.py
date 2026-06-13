@@ -2,7 +2,9 @@ import json
 import os
 import pathlib
 import subprocess
+import sys
 import unittest
+from unittest.mock import patch
 
 from helpers import assert_hook_ok, hook_test_env, read_log, run_hook
 
@@ -45,6 +47,21 @@ def install_fake_llm(root: pathlib.Path, env: dict, *, transition="NONE", slug="
 
 def call_tags(calls: pathlib.Path) -> list[str]:
     return calls.read_text().splitlines() if calls.exists() else []
+
+
+def seed_workstream(env: dict, dirs: dict, session_id: str, state: str, slug: str = "billing-retry-rules") -> None:
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "hooks"))
+    import workflow_state
+
+    (dirs["terminal"] / session_id).write_text("term-test-1")
+    (dirs["debounce"] / session_id).write_text(f"123\n🌀 {state}-{slug}")
+    with patch.dict(os.environ, env, clear=True):
+        workflow_state.create_workstream(
+            session_id=session_id,
+            terminal_id="term-test-1",
+            state=state,
+            slug=slug,
+        )
 
 
 class TabtitleWorkflowHookTests(unittest.TestCase):
@@ -572,20 +589,7 @@ class TabtitleWorkflowHookTests(unittest.TestCase):
     def test_question_result_can_transition_plan_to_cook(self):
         with hook_test_env() as (root, env, dirs):
             calls = install_fake_llm(root, env, transition="COOK", slug="should-not-be-used")
-            (dirs["terminal"] / "session-question-cook").write_text("term-test-1")
-            (dirs["debounce"] / "session-question-cook").write_text("123\n🌀 plan-billing-retry-rules")
-
-            import sys
-            sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "hooks"))
-            import workflow_state
-            from unittest.mock import patch
-            with patch.dict(os.environ, env, clear=True):
-                workflow_state.create_workstream(
-                    session_id="session-question-cook",
-                    terminal_id="term-test-1",
-                    state="plan",
-                    slug="billing-retry-rules",
-                )
+            seed_workstream(env, dirs, "session-question-cook", "plan")
 
             result = run_hook(
                 "tabtitle-hook.py",
@@ -612,20 +616,7 @@ class TabtitleWorkflowHookTests(unittest.TestCase):
     def test_question_result_transition_none_keeps_plan_without_ordinary_slug(self):
         with hook_test_env() as (root, env, dirs):
             calls = install_fake_llm(root, env, transition="NONE", slug="ordinary-title-should-not-run")
-            (dirs["terminal"] / "session-question-none").write_text("term-test-1")
-            (dirs["debounce"] / "session-question-none").write_text("123\n🌀 plan-billing-retry-rules")
-
-            import sys
-            sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "hooks"))
-            import workflow_state
-            from unittest.mock import patch
-            with patch.dict(os.environ, env, clear=True):
-                workflow_state.create_workstream(
-                    session_id="session-question-none",
-                    terminal_id="term-test-1",
-                    state="plan",
-                    slug="billing-retry-rules",
-                )
+            seed_workstream(env, dirs, "session-question-none", "plan")
 
             result = run_hook(
                 "tabtitle-hook.py",
@@ -652,20 +643,25 @@ class TabtitleWorkflowHookTests(unittest.TestCase):
     def test_question_result_transition_only_ignores_non_plan_workflow(self):
         with hook_test_env() as (root, env, dirs):
             calls = install_fake_llm(root, env, transition="COOK", slug="ordinary-title-should-not-run")
-            (dirs["terminal"] / "session-question-check").write_text("term-test-1")
-            (dirs["debounce"] / "session-question-check").write_text("123\n🌀 check-billing-retry-rules")
-
-            import sys
-            sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "hooks"))
-            import workflow_state
-            from unittest.mock import patch
-            with patch.dict(os.environ, env, clear=True):
-                workflow_state.create_workstream(
-                    session_id="session-question-check",
-                    terminal_id="term-test-1",
-                    state="check",
-                    slug="billing-retry-rules",
+            seed_workstream(env, dirs, "session-question-check", "check")
+            session_file = root / "session-question-check.jsonl"
+            session_file.write_text(
+                json.dumps(
+                    {
+                        "type": "message",
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "Stale plan artifact: `plans/billing-retry-rules.md`",
+                                }
+                            ],
+                        },
+                    }
                 )
+                + "\n"
+            )
 
             result = run_hook(
                 "tabtitle-hook.py",
@@ -675,6 +671,8 @@ class TabtitleWorkflowHookTests(unittest.TestCase):
                     "hook_event_name": "QuestionToolResult",
                     "prompt": "User answered questions:\n- Question: Continue?\n  Answer: Implement",
                     "workflow_transition_only": "plan-to-cook",
+                    "transcript_path": str(session_file),
+                    "session_file": str(session_file),
                 },
                 env,
             )

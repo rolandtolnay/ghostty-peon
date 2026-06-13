@@ -19,6 +19,7 @@ import {
 	isQuestionToolName,
 	mapSessionStartReason,
 	permissionHookEventName,
+	QUESTION_WORKFLOW_TRANSITION_TARGET,
 	questionWorkflowTransitionPayload,
 	sessionId,
 	type PermissionEvent,
@@ -166,7 +167,7 @@ export default function (pi: ExtensionAPI) {
 
 		const transitionPayload = questionWorkflowTransitionPayload(event, ctx, id);
 		if (transitionPayload) {
-			runnerLog(id, "event question_workflow_transition target=plan-to-cook");
+			runnerLog(id, `event question_workflow_transition target=${QUESTION_WORKFLOW_TRANSITION_TARGET}`);
 			const pendingTabtitle = runHook(
 				"tabtitle-hook.py",
 				transitionPayload,
@@ -189,6 +190,8 @@ export default function (pi: ExtensionAPI) {
 		if (pendingTabtitle) await waitBriefly(pendingTabtitle, TABTITLE_BARRIER_MS);
 		const pendingToolResult = pendingToolResultBySession.get(id);
 		if (pendingToolResult) await waitBriefly(pendingToolResult, FAST_HOOK_TIMEOUT_MS);
+		const followupTabtitle = pendingTabtitleBySession.get(id);
+		if (followupTabtitle && followupTabtitle !== pendingTabtitle) await waitBriefly(followupTabtitle, TABTITLE_BARRIER_MS);
 
 		await runHook(
 			"tab-stop-question-hook.py",

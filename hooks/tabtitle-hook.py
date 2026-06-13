@@ -737,19 +737,20 @@ def maybe_apply_canonical_workflow(
     image_count: int,
 ) -> str:
     """Apply Pi Canonical Workflow Mode and report whether ordinary slug flow may continue."""
+    transition_only = workflow_transition_only(data)
     if runtime_config.namespace() != "pi":
-        return WORKFLOW_NO_SIGNAL
+        return WORKFLOW_HANDLED_NO_TITLE if transition_only else WORKFLOW_NO_SIGNAL
 
     cook_metadata = cook_plan_metadata(data)
     selected_skills = workflow_model.invoked_skill_names(prompt)
     if cook_metadata and "cook-plan" not in selected_skills:
         selected_skills = (*selected_skills, "cook-plan")
     signal_state = workflow_model.deterministic_state(selected_skills)
-    artifact_candidates = workflow_artifact_candidates(data, prompt, cook_metadata, include_transcript=False)
+    artifact_candidates = [] if transition_only else workflow_artifact_candidates(data, prompt, cook_metadata, include_transcript=False)
     has_explicit_signal = bool(signal_state or artifact_candidates)
     term_id = get_terminal_id(session_id) or ""
     active_resolved = workflow_state.resolve_active(session_id=session_id, terminal_id=term_id)
-    if not (
+    if not transition_only and not (
         active_resolved
         and active_resolved.state == workflow_model.CHECK
         and signal_state == workflow_model.PLAN
@@ -779,9 +780,8 @@ def maybe_apply_canonical_workflow(
     )
     artifact_binding_slug = artifact_resolved.slug if artifact_resolved else ""
 
-    transition_only = workflow_transition_only(data)
     transition_kind = workflow_transition_kind(is_first_message, current_workflow_state, selected_skills)
-    if transition_only and transition_kind != transition_only:
+    if transition_only and (not active_resolved or active_resolved.state != workflow_model.PLAN or transition_kind != transition_only):
         log(session_id, "tabtitle", f"workflow transition-only {transition_only} skipped from state={current_workflow_state!r}")
         return WORKFLOW_HANDLED_NO_TITLE
 
@@ -945,9 +945,6 @@ def main():
         image_count,
     )
     if workflow_result != WORKFLOW_NO_SIGNAL:
-        sys.exit(0)
-    if workflow_transition_only(data):
-        log(session_id, "tabtitle", "workflow transition-only -> no transition")
         sys.exit(0)
 
     skip_reason = should_skip(session_id, title_prompt)

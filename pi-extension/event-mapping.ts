@@ -1,6 +1,8 @@
 // Managed by ghostty-peon install.js. Source: pi-extension/event-mapping.ts
 import type { AgentEndEvent, ExtensionContext, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 
+export const QUESTION_WORKFLOW_TRANSITION_TARGET = "plan-to-cook";
+
 export type PermissionEvent = {
 	phase?: "start" | "end";
 	sessionId?: string;
@@ -46,7 +48,7 @@ export function questionWorkflowTransitionPayload(
 		hook_event_name: "QuestionToolResult",
 		prompt,
 		transcript_path: sessionFile,
-		workflow_transition_only: "plan-to-cook",
+		workflow_transition_only: QUESTION_WORKFLOW_TRANSITION_TARGET,
 	};
 }
 
