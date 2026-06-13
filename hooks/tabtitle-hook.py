@@ -48,6 +48,7 @@ FALLBACK_RETRY_TIMESTAMP = "0"
 WORKFLOW_NO_SIGNAL = "no-signal"
 WORKFLOW_APPLIED = "applied"
 WORKFLOW_HANDLED_NO_TITLE = "handled-no-title"
+WORKFLOW_TRANSITION_PLAN_TO_COOK = "plan-to-cook"
 
 # Prompts to completely ignore — no rename, no history, no side effects.
 IGNORED_PROMPTS = [
@@ -688,8 +689,13 @@ def workflow_transition_kind(is_first_message: bool, current_state: str, selecte
     if current_state == workflow_model.CHECK:
         return "check-to-prep"
     if current_state == workflow_model.PLAN:
-        return "plan-to-cook"
+        return WORKFLOW_TRANSITION_PLAN_TO_COOK
     return ""
+
+
+def workflow_transition_only(data: dict) -> str:
+    value = data.get("workflow_transition_only", "")
+    return value if value == WORKFLOW_TRANSITION_PLAN_TO_COOK else ""
 
 
 def judge_workflow_transition(
@@ -773,8 +779,14 @@ def maybe_apply_canonical_workflow(
     )
     artifact_binding_slug = artifact_resolved.slug if artifact_resolved else ""
 
+    transition_only = workflow_transition_only(data)
+    transition_kind = workflow_transition_kind(is_first_message, current_workflow_state, selected_skills)
+    if transition_only and transition_kind != transition_only:
+        log(session_id, "tabtitle", f"workflow transition-only {transition_only} skipped from state={current_workflow_state!r}")
+        return WORKFLOW_HANDLED_NO_TITLE
+
     transition = judge_workflow_transition(
-        workflow_transition_kind(is_first_message, current_workflow_state, selected_skills),
+        transition_kind,
         title_prompt,
         current_workflow_state,
         current_title,
@@ -933,6 +945,9 @@ def main():
         image_count,
     )
     if workflow_result != WORKFLOW_NO_SIGNAL:
+        sys.exit(0)
+    if workflow_transition_only(data):
+        log(session_id, "tabtitle", "workflow transition-only -> no transition")
         sys.exit(0)
 
     skip_reason = should_skip(session_id, title_prompt)

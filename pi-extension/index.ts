@@ -19,6 +19,7 @@ import {
 	isQuestionToolName,
 	mapSessionStartReason,
 	permissionHookEventName,
+	questionWorkflowTransitionPayload,
 	sessionId,
 	type PermissionEvent,
 } from "./event-mapping.js";
@@ -161,6 +162,22 @@ export default function (pi: ExtensionAPI) {
 			await pending;
 		} finally {
 			if (pendingToolResultBySession.get(id) === pending) pendingToolResultBySession.delete(id);
+		}
+
+		const transitionPayload = questionWorkflowTransitionPayload(event, ctx, id);
+		if (transitionPayload) {
+			runnerLog(id, "event question_workflow_transition target=plan-to-cook");
+			const pendingTabtitle = runHook(
+				"tabtitle-hook.py",
+				transitionPayload,
+				ctx.cwd,
+				id,
+				{ timeoutMs: HOOK_TIMEOUT_MS },
+			);
+			pendingTabtitleBySession.set(id, pendingTabtitle);
+			void pendingTabtitle.finally(() => {
+				if (pendingTabtitleBySession.get(id) === pendingTabtitle) pendingTabtitleBySession.delete(id);
+			});
 		}
 		return undefined;
 	});

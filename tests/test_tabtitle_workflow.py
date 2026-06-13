@@ -569,6 +569,121 @@ class TabtitleWorkflowHookTests(unittest.TestCase):
             self.assertEqual((dirs["debounce"] / "session-cook-branch").read_text().splitlines()[1], "🌀 cook-canonical-workflow-titles")
             self.assertEqual(call_tags(calls), [])
 
+    def test_question_result_can_transition_plan_to_cook(self):
+        with hook_test_env() as (root, env, dirs):
+            calls = install_fake_llm(root, env, transition="COOK", slug="should-not-be-used")
+            (dirs["terminal"] / "session-question-cook").write_text("term-test-1")
+            (dirs["debounce"] / "session-question-cook").write_text("123\n🌀 plan-billing-retry-rules")
+
+            import sys
+            sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "hooks"))
+            import workflow_state
+            from unittest.mock import patch
+            with patch.dict(os.environ, env, clear=True):
+                workflow_state.create_workstream(
+                    session_id="session-question-cook",
+                    terminal_id="term-test-1",
+                    state="plan",
+                    slug="billing-retry-rules",
+                )
+
+            result = run_hook(
+                "tabtitle-hook.py",
+                {
+                    "session_id": "session-question-cook",
+                    "cwd": str(root / "project"),
+                    "hook_event_name": "QuestionToolResult",
+                    "prompt": (
+                        "User answered questions:\n"
+                        "- Question: What should happen next?\n"
+                        "  Answer: Recommended\n"
+                        "  Selected option: Recommended — Implement the approved plan now."
+                    ),
+                    "workflow_transition_only": "plan-to-cook",
+                },
+                env,
+            )
+
+            assert_hook_ok(self, result)
+            self.assertEqual((dirs["debounce"] / "session-question-cook").read_text().splitlines()[1], "🌀 cook-billing-retry-rules")
+            self.assertEqual(call_tags(calls), ["workflow-transition"])
+            self.assertIn("workflow -> 🌀 renamed ('cook-billing-retry-rules')", read_log(root))
+
+    def test_question_result_transition_none_keeps_plan_without_ordinary_slug(self):
+        with hook_test_env() as (root, env, dirs):
+            calls = install_fake_llm(root, env, transition="NONE", slug="ordinary-title-should-not-run")
+            (dirs["terminal"] / "session-question-none").write_text("term-test-1")
+            (dirs["debounce"] / "session-question-none").write_text("123\n🌀 plan-billing-retry-rules")
+
+            import sys
+            sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "hooks"))
+            import workflow_state
+            from unittest.mock import patch
+            with patch.dict(os.environ, env, clear=True):
+                workflow_state.create_workstream(
+                    session_id="session-question-none",
+                    terminal_id="term-test-1",
+                    state="plan",
+                    slug="billing-retry-rules",
+                )
+
+            result = run_hook(
+                "tabtitle-hook.py",
+                {
+                    "session_id": "session-question-none",
+                    "cwd": str(root / "project"),
+                    "hook_event_name": "QuestionToolResult",
+                    "prompt": (
+                        "User answered questions:\n"
+                        "- Question: What should happen next?\n"
+                        "  Answer: Revise plan\n"
+                        "  Selected option: Revise plan — Update the plan before coding."
+                    ),
+                    "workflow_transition_only": "plan-to-cook",
+                },
+                env,
+            )
+
+            assert_hook_ok(self, result)
+            self.assertEqual((dirs["debounce"] / "session-question-none").read_text().splitlines()[1], "🌀 plan-billing-retry-rules")
+            self.assertEqual(call_tags(calls), ["workflow-transition"])
+            self.assertNotIn("ordinary-title-should-not-run", (dirs["debounce"] / "session-question-none").read_text())
+
+    def test_question_result_transition_only_ignores_non_plan_workflow(self):
+        with hook_test_env() as (root, env, dirs):
+            calls = install_fake_llm(root, env, transition="COOK", slug="ordinary-title-should-not-run")
+            (dirs["terminal"] / "session-question-check").write_text("term-test-1")
+            (dirs["debounce"] / "session-question-check").write_text("123\n🌀 check-billing-retry-rules")
+
+            import sys
+            sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "hooks"))
+            import workflow_state
+            from unittest.mock import patch
+            with patch.dict(os.environ, env, clear=True):
+                workflow_state.create_workstream(
+                    session_id="session-question-check",
+                    terminal_id="term-test-1",
+                    state="check",
+                    slug="billing-retry-rules",
+                )
+
+            result = run_hook(
+                "tabtitle-hook.py",
+                {
+                    "session_id": "session-question-check",
+                    "cwd": str(root / "project"),
+                    "hook_event_name": "QuestionToolResult",
+                    "prompt": "User answered questions:\n- Question: Continue?\n  Answer: Implement",
+                    "workflow_transition_only": "plan-to-cook",
+                },
+                env,
+            )
+
+            assert_hook_ok(self, result)
+            self.assertEqual((dirs["debounce"] / "session-question-check").read_text().splitlines()[1], "🌀 check-billing-retry-rules")
+            self.assertEqual(call_tags(calls), [])
+            self.assertIn("workflow transition-only plan-to-cook skipped from state='check'", read_log(root))
+
     def test_claude_payload_ignores_workflow_skills_and_uses_ordinary_slug_flow(self):
         with hook_test_env(namespace="claude") as (root, env, dirs):
             calls = install_fake_llm(root, env, transition="CHECK", slug="ordinary-claude-title")

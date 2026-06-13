@@ -1,5 +1,5 @@
 // Managed by ghostty-peon install.js. Source: pi-extension/event-mapping.ts
-import type { AgentEndEvent, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AgentEndEvent, ExtensionContext, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 
 export type PermissionEvent = {
 	phase?: "start" | "end";
@@ -30,6 +30,57 @@ export function beforeAgentStartPayload(event: { prompt?: string; images?: unkno
 		image_count: imageCount,
 		transcript_path: sessionFile,
 	};
+}
+
+export function questionWorkflowTransitionPayload(
+	event: Pick<ToolResultEvent, "toolName" | "details">,
+	ctx: ExtensionContext,
+	id = sessionId(ctx),
+) {
+	if (!isQuestionToolName(event.toolName)) return undefined;
+	const prompt = questionWorkflowTransitionPrompt(event.details);
+	if (!prompt) return undefined;
+	const sessionFile = ctx.sessionManager.getSessionFile() || "";
+	return {
+		...basePayload(ctx, id),
+		hook_event_name: "QuestionToolResult",
+		prompt,
+		transcript_path: sessionFile,
+		workflow_transition_only: "plan-to-cook",
+	};
+}
+
+export function questionWorkflowTransitionPrompt(details: unknown): string | undefined {
+	const record = asRecord(details);
+	if (!record || record.result !== "submitted") return undefined;
+	const selections = Array.isArray(record.selections) ? record.selections : [];
+	const questions = Array.isArray(record.questions) ? record.questions : [];
+	const lines = ["User answered questions:"];
+
+	for (const [index, rawSelection] of selections.entries()) {
+		const selection = asRecord(rawSelection);
+		if (!selection) continue;
+		const answer = cleanText(selection.answer);
+		if (!answer) continue;
+
+		const question = cleanText(selection.question) || questionTextAt(questions, index);
+		if (question) lines.push(`- Question: ${question}`);
+		else lines.push("- Question: (unknown)");
+		lines.push(`  Answer: ${answer}`);
+
+		const selectedLabels = Array.isArray(selection.selectedOptions)
+			? selection.selectedOptions.map(cleanText).filter(Boolean)
+			: [];
+		for (const label of selectedLabels) {
+			const description = optionDescriptionFor(questions, index, label);
+			lines.push(description ? `  Selected option: ${label} — ${description}` : `  Selected option: ${label}`);
+		}
+
+		const customText = cleanText(selection.customText);
+		if (customText && customText !== answer) lines.push(`  Free-form answer: ${customText}`);
+	}
+
+	return lines.length > 1 ? lines.join("\n") : undefined;
 }
 
 export function extractAssistantText(event: AgentEndEvent) {
@@ -82,6 +133,29 @@ function questionToolCallText(record: Record<string, unknown>): string {
 		}
 	}
 	return parts.join("\n");
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+	return value && typeof value === "object" ? value as Record<string, unknown> : undefined;
+}
+
+function cleanText(value: unknown): string {
+	return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+}
+
+function questionTextAt(questions: unknown[], index: number): string {
+	return cleanText(asRecord(questions[index])?.question);
+}
+
+function optionDescriptionFor(questions: unknown[], questionIndex: number, label: string): string {
+	const question = asRecord(questions[questionIndex]);
+	const options = Array.isArray(question?.options) ? question.options : [];
+	for (const rawOption of options) {
+		const option = asRecord(rawOption);
+		if (!option || cleanText(option.label) !== label) continue;
+		return cleanText(option.description);
+	}
+	return "";
 }
 
 export function mapSessionStartReason(reason: string) {
