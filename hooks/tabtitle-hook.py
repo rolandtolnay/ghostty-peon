@@ -15,8 +15,10 @@ The first user message in a session always triggers a rename.
 """
 
 from dataclasses import dataclass
+import html
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -51,6 +53,8 @@ WORKFLOW_HANDLED_NO_TITLE = "handled-no-title"
 IGNORED_PROMPTS = [
     "/commit-commands:commit",
 ]
+
+USER_REQUEST_RE = re.compile(r"<user-request>(.*?)</user-request>", re.IGNORECASE | re.DOTALL)
 
 FALLBACK_STOPWORDS = {
     "a",
@@ -374,10 +378,30 @@ def get_transcript_path(data: dict, session_id: str) -> str:
     return ""
 
 
+def extract_skill_user_request(text: str) -> str:
+    """Return the original user request from a Pi skill-expanded prompt when present."""
+    if not isinstance(text, str):
+        return ""
+    lowered = text.lower()
+    if "<skill" not in lowered or "<user-request" not in lowered:
+        return ""
+    requests = []
+    for match in USER_REQUEST_RE.finditer(text):
+        request = html.unescape(match.group(1)).strip()
+        if request:
+            requests.append(request)
+    return "\n\n".join(requests)
+
+
+def title_model_prompt_text(prompt: str) -> str:
+    """Return the user-authored text that should be shown to title LLMs."""
+    return extract_skill_user_request(prompt) or prompt
+
+
 def get_recent_user_messages(
     transcript_path: str, current_prompt: str, count: int = 2
 ) -> list[str]:
-    """Extract the last N user messages from the transcript, excluding current prompt."""
+    """Extract recent user-authored messages from the transcript, excluding current prompt."""
     if not transcript_path or not os.path.exists(transcript_path):
         return []
 
@@ -406,13 +430,20 @@ def get_recent_user_messages(
                             if isinstance(block, dict) and block.get("type") == "text":
                                 texts.append(block.get("text", ""))
                         text = "\n".join(texts)
-                    if text.strip() and text.strip() not in IGNORED_PROMPTS:
-                        user_messages.append(text[:MAX_MSG_CHARS])
+                    normalized = title_model_prompt_text(text).strip()
+                    if (
+                        normalized
+                        and text.strip() not in IGNORED_PROMPTS
+                        and normalized not in IGNORED_PROMPTS
+                    ):
+                        user_messages.append(normalized[:MAX_MSG_CHARS])
     except OSError:
         return []
 
-    # Deduplicate: if last transcript message matches current prompt, skip it
-    if user_messages and user_messages[-1][:200] == current_prompt[:200]:
+    # Deduplicate: if last transcript message matches the current prompt after
+    # skill-envelope normalization, skip it.
+    current_normalized = title_model_prompt_text(current_prompt).strip()
+    if user_messages and user_messages[-1][:200] == current_normalized[:200]:
         user_messages = user_messages[:-1]
 
     return user_messages[-count:] if user_messages else []
@@ -424,7 +455,7 @@ def conversation_context(data: dict, session_id: str, prompt: str, is_first_mess
         return "", []
     origin_message = title_state.read_origin(session_id)
     transcript_path = get_transcript_path(data, session_id)
-    return origin_message, get_recent_user_messages(transcript_path, prompt, count=1)
+    return origin_message, get_recent_user_messages(transcript_path, prompt, count=2)
 
 
 @dataclass(frozen=True)
@@ -684,6 +715,7 @@ def maybe_apply_canonical_workflow(
     data: dict,
     session_id: str,
     prompt: str,
+    title_prompt: str,
     current_title: str,
     semantic_current_title: str,
     current_timestamp: str,
@@ -725,7 +757,7 @@ def maybe_apply_canonical_workflow(
 
     transition = judge_workflow_transition(
         workflow_transition_kind(is_first_message, current_workflow_state, selected_skills),
-        prompt,
+        title_prompt,
         current_workflow_state,
         current_title,
         origin_message,
@@ -762,7 +794,7 @@ def maybe_apply_canonical_workflow(
             f"calling llm for workflow slug (state={decision.state!r}, current={slug_current_title!r})",
         )
         slug_result = generate_slug_result(
-            prompt,
+            title_prompt,
             slug_current_title,
             origin_message,
             recent_messages,
@@ -772,7 +804,7 @@ def maybe_apply_canonical_workflow(
         slug = slug_result.slug
         log(session_id, "tabtitle", f"workflow slug llm returned {slug!r}")
         if not slug and not current_title and image_count:
-            slug = fallback_slug_for_image_prompt(prompt)
+            slug = fallback_slug_for_image_prompt(title_prompt)
             log(session_id, "tabtitle", f"workflow image fallback returned {slug!r}")
         if not slug:
             log(session_id, "tabtitle", "workflow -> handled without title (missing slug)")
@@ -830,7 +862,7 @@ def maybe_apply_canonical_workflow(
     log(session_id, "tabtitle", f"workflow -> {EMOJI_WORKING} renamed ({canonical_title!r})")
     play_sound("task.acknowledge", session_id)
     if is_first_message or not title_state.read_origin(session_id):
-        title_state.write_origin(session_id, prompt, max_chars=MAX_MSG_CHARS)
+        title_state.write_origin(session_id, title_prompt, max_chars=MAX_MSG_CHARS)
     return WORKFLOW_APPLIED
 
 
@@ -841,6 +873,7 @@ def main():
 
     data = json.load(sys.stdin)
     prompt = data.get("prompt", "")
+    title_prompt = title_model_prompt_text(prompt)
     session_id = data.get("session_id", "unknown")
     if skip_subagent_payload(data, session_id, "tabtitle"):
         sys.exit(0)
@@ -852,7 +885,8 @@ def main():
         sys.exit(0)
 
     image_log = f", images={image_count}" if image_count else ""
-    log(session_id, "tabtitle", f"prompt={len(prompt)}chars{image_log}")
+    title_prompt_log = f", title_prompt={len(title_prompt)}chars" if title_prompt != prompt else ""
+    log(session_id, "tabtitle", f"prompt={len(prompt)}chars{title_prompt_log}{image_log}")
 
     # Replace any previous emoji with 🌊 working indicator
     state = title_state.read(session_id)
@@ -871,6 +905,7 @@ def main():
         data,
         session_id,
         prompt,
+        title_prompt,
         current_title,
         semantic_current_title,
         current_timestamp,
@@ -882,7 +917,7 @@ def main():
     if workflow_result != WORKFLOW_NO_SIGNAL:
         sys.exit(0)
 
-    skip_reason = should_skip(session_id, prompt)
+    skip_reason = should_skip(session_id, title_prompt)
     if skip_reason:
         log(session_id, "tabtitle", f"skip: {skip_reason}")
         sys.exit(0)
@@ -893,7 +928,7 @@ def main():
         f"calling llm (current={semantic_current_title!r}, origin={len(origin_message)}chars, recent={len(recent_messages)}msgs)",
     )
     slug_result = generate_slug_result(
-        prompt,
+        title_prompt,
         semantic_current_title,
         origin_message,
         recent_messages,
@@ -903,7 +938,7 @@ def main():
     slug = slug_result.slug
     log(session_id, "tabtitle", f"llm returned {slug!r}")
     if not slug and not current_title and image_count:
-        slug = fallback_slug_for_image_prompt(prompt)
+        slug = fallback_slug_for_image_prompt(title_prompt)
         log(session_id, "tabtitle", f"image fallback returned {slug!r}")
 
     now = str(time.time())
@@ -919,7 +954,7 @@ def main():
             log(session_id, "tabtitle", f"set_status_emoji failed for {slug!r}")
             sys.exit(0)
         play_sound("task.acknowledge", session_id)
-        title_state.write_origin(session_id, prompt, max_chars=MAX_MSG_CHARS)
+        title_state.write_origin(session_id, title_prompt, max_chars=MAX_MSG_CHARS)
     else:
         if current_title:
             # No rename — keep working emoji, preserve original timestamp (no cooldown reset)
@@ -936,7 +971,7 @@ def main():
                 except OSError as e:
                     log(session_id, "tabtitle", f"debounce write failed: {e}")
         if is_first_message:
-            title_state.write_origin(session_id, prompt, max_chars=MAX_MSG_CHARS)
+            title_state.write_origin(session_id, title_prompt, max_chars=MAX_MSG_CHARS)
         log(session_id, "tabtitle", "no rename, cooldown not reset")
 
     sys.exit(0)

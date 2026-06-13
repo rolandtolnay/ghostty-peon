@@ -20,6 +20,11 @@ def install_fake_llm(root: pathlib.Path, env: dict, *, transition="NONE", slug="
         "        tag = args[i + 1]\n"
         "with open(os.environ['GHOSTTY_PEON_FAKE_LLM_CALLS'], 'a') as f:\n"
         "    f.write(tag + '\\n')\n"
+        "prompt_log = os.environ.get('GHOSTTY_PEON_FAKE_LLM_PROMPTS')\n"
+        "if prompt_log:\n"
+        "    import json\n"
+        "    with open(prompt_log, 'a') as f:\n"
+        "        f.write(json.dumps({'tag': tag, 'prompt': args[-1] if args else ''}) + '\\n')\n"
         "if tag == 'workflow-transition':\n"
         "    print(os.environ.get('GHOSTTY_PEON_FAKE_WORKFLOW_TRANSITION', 'NONE'))\n"
         "else:\n"
@@ -136,6 +141,105 @@ class TabtitleWorkflowHookTests(unittest.TestCase):
                 self.assertEqual(active.slug, "new-product-brief")
                 self.assertNotEqual(active.id, original.id)
             self.assertIn("workflow -> 🌀 renamed ('prep-new-product-brief')", read_log(root))
+
+    def test_plan_quick_slug_uses_user_request_instead_of_skill_body(self):
+        with hook_test_env() as (root, env, dirs):
+            prompt_log = root / "llm-prompts.jsonl"
+            install_fake_llm(root, env, transition="NONE", slug="ask-questions-shared-understanding")
+            env["GHOSTTY_PEON_FAKE_LLM_PROMPTS"] = str(prompt_log)
+            (dirs["terminal"] / "session-plan-quick").write_text("term-test-1")
+
+            result = run_hook(
+                "tabtitle-hook.py",
+                {
+                    "session_id": "session-plan-quick",
+                    "cwd": str(root / "project"),
+                    "hook_event_name": "UserPromptSubmit",
+                    "prompt": (
+                        '<skill name="plan-quick" location="/tmp/plan-quick/SKILL.md">\n'
+                        "References are relative to /Users/example/.pi/agent\n\n"
+                        "<user-request>\n"
+                        "Ask me questions one by one until you are confident we have reached a shared understanding on what to build.\n"
+                        "</user-request>\n\n"
+                        "<skill-instructions>\n"
+                        "Quick-validate conversation-agreed changes against the codebase.\n"
+                        "Mention plan-quick many times in the skill body.\n"
+                        "</skill-instructions>\n"
+                        "</skill>"
+                    ),
+                },
+                env,
+            )
+
+            assert_hook_ok(self, result)
+            self.assertEqual((dirs["debounce"] / "session-plan-quick").read_text().splitlines()[1], "🌀 plan-ask-questions-shared-understanding")
+            self.assertEqual(
+                (dirs["debounce"] / "session-plan-quick.origin").read_text(),
+                "Ask me questions one by one until you are confident we have reached a shared understanding on what to build.",
+            )
+            records = [json.loads(line) for line in prompt_log.read_text().splitlines()]
+            tabtitle_prompt = next(record["prompt"] for record in records if record["tag"] == "tabtitle")
+            self.assertIn(
+                "<current_message>Ask me questions one by one until you are confident we have reached a shared understanding on what to build.</current_message>",
+                tabtitle_prompt,
+            )
+            self.assertNotIn("<skill", tabtitle_prompt)
+            self.assertNotIn("plan-quick", tabtitle_prompt)
+            self.assertNotIn("Quick-validate", tabtitle_prompt)
+
+    def test_skill_recent_messages_use_user_requests_instead_of_skill_bodies(self):
+        with hook_test_env() as (root, env, dirs):
+            prompt_log = root / "llm-prompts.jsonl"
+            install_fake_llm(root, env, transition="NONE", slug="source-footprint-plan")
+            env["GHOSTTY_PEON_FAKE_LLM_PROMPTS"] = str(prompt_log)
+            session_file = root / "session-plan-quick.jsonl"
+            previous_prompt = (
+                '<skill name="diagnose" location="/tmp/diagnose/SKILL.md">\n'
+                "<user-request>Diagnose why the source-based session footprint plan is unclear.</user-request>\n"
+                "<skill-instructions>Verbose diagnose instructions that should not reach tabtitle.</skill-instructions>\n"
+                "</skill>"
+            )
+            current_prompt = (
+                '<skill name="plan-quick" location="/tmp/plan-quick/SKILL.md">\n'
+                "<user-request>Turn that diagnosis into an implementation plan.</user-request>\n"
+                "<skill-instructions>Verbose plan-quick instructions that should not reach tabtitle.</skill-instructions>\n"
+                "</skill>"
+            )
+            session_file.write_text(
+                json.dumps({"message": {"role": "user", "content": previous_prompt}})
+                + "\n"
+                + json.dumps({"message": {"role": "user", "content": current_prompt}})
+                + "\n"
+            )
+            (dirs["terminal"] / "session-plan-quick-recent").write_text("term-test-1")
+            (dirs["debounce"] / "session-plan-quick-recent").write_text("0\n")
+
+            result = run_hook(
+                "tabtitle-hook.py",
+                {
+                    "session_id": "session-plan-quick-recent",
+                    "cwd": str(root / "project"),
+                    "hook_event_name": "UserPromptSubmit",
+                    "prompt": current_prompt,
+                    "transcript_path": str(session_file),
+                    "session_file": str(session_file),
+                },
+                env,
+            )
+
+            assert_hook_ok(self, result)
+            records = [json.loads(line) for line in prompt_log.read_text().splitlines()]
+            tabtitle_prompt = next(record["prompt"] for record in records if record["tag"] == "tabtitle")
+            self.assertIn(
+                "<recent_message>Diagnose why the source-based session footprint plan is unclear.</recent_message>",
+                tabtitle_prompt,
+            )
+            self.assertIn(
+                "<current_message>Turn that diagnosis into an implementation plan.</current_message>",
+                tabtitle_prompt,
+            )
+            self.assertNotIn("Verbose diagnose instructions", tabtitle_prompt)
+            self.assertNotIn("Verbose plan-quick instructions", tabtitle_prompt)
 
     def test_plan_skill_uses_recent_transcript_prd_over_placeholder_templates(self):
         with hook_test_env() as (root, env, dirs):
