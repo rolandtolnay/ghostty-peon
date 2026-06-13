@@ -241,6 +241,51 @@ class TabtitleWorkflowHookTests(unittest.TestCase):
             self.assertNotIn("Verbose diagnose instructions", tabtitle_prompt)
             self.assertNotIn("Verbose plan-quick instructions", tabtitle_prompt)
 
+    def test_workflow_transition_normalizes_existing_skill_origin(self):
+        with hook_test_env() as (root, env, dirs):
+            prompt_log = root / "llm-prompts.jsonl"
+            install_fake_llm(root, env, transition="COOK", slug="should-not-be-used")
+            env["GHOSTTY_PEON_FAKE_LLM_PROMPTS"] = str(prompt_log)
+            (dirs["terminal"] / "session-plan-origin").write_text("term-test-1")
+            (dirs["debounce"] / "session-plan-origin").write_text("123\n🌀 plan-billing-retry-rules")
+            (dirs["debounce"] / "session-plan-origin.origin").write_text(
+                '<skill name="plan-quick" location="/tmp/plan-quick/SKILL.md">\n'
+                "<user-request>Plan billing retry rules.</user-request>\n"
+                "<skill-instructions>Verbose plan-quick instructions that should not reach transition judgment.</skill-instructions>\n"
+                "</skill>"
+            )
+
+            import sys
+            sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "hooks"))
+            import workflow_state
+            from unittest.mock import patch
+            with patch.dict(os.environ, env, clear=True):
+                workflow_state.create_workstream(
+                    session_id="session-plan-origin",
+                    terminal_id="term-test-1",
+                    state="plan",
+                    slug="billing-retry-rules",
+                )
+
+            result = run_hook(
+                "tabtitle-hook.py",
+                {
+                    "session_id": "session-plan-origin",
+                    "cwd": str(root / "project"),
+                    "hook_event_name": "UserPromptSubmit",
+                    "prompt": "Looks good, implement it.",
+                },
+                env,
+            )
+
+            assert_hook_ok(self, result)
+            self.assertEqual((dirs["debounce"] / "session-plan-origin").read_text().splitlines()[1], "🌀 cook-billing-retry-rules")
+            records = [json.loads(line) for line in prompt_log.read_text().splitlines()]
+            transition_prompt = next(record["prompt"] for record in records if record["tag"] == "workflow-transition")
+            self.assertIn("<title_origin>Plan billing retry rules.</title_origin>", transition_prompt)
+            self.assertNotIn("Verbose plan-quick instructions", transition_prompt)
+            self.assertNotIn("<skill", transition_prompt)
+
     def test_plan_skill_uses_recent_transcript_prd_over_placeholder_templates(self):
         with hook_test_env() as (root, env, dirs):
             calls = install_fake_llm(root, env, transition="NONE", slug="should-not-be-used")

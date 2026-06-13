@@ -453,7 +453,7 @@ def conversation_context(data: dict, session_id: str, prompt: str, is_first_mess
     if is_first_message:
         title_state.delete_origin(session_id)
         return "", []
-    origin_message = title_state.read_origin(session_id)
+    origin_message = title_model_prompt_text(title_state.read_origin(session_id))
     transcript_path = get_transcript_path(data, session_id)
     return origin_message, get_recent_user_messages(transcript_path, prompt, count=2)
 
