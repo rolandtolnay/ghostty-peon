@@ -405,6 +405,15 @@ def title_model_prompt_text(prompt: str) -> str:
     return extract_skill_user_request(prompt) or prompt
 
 
+def recent_user_message_text(text: str) -> str:
+    """Return user-authored transcript text, skipping raw skill instruction envelopes."""
+    if not isinstance(text, str):
+        return ""
+    if "<skill" in text.lower():
+        return extract_skill_user_request(text).strip()
+    return title_model_prompt_text(text).strip()
+
+
 def get_recent_user_messages(
     transcript_path: str, current_prompt: str, count: int = 2
 ) -> list[str]:
@@ -437,7 +446,7 @@ def get_recent_user_messages(
                             if isinstance(block, dict) and block.get("type") == "text":
                                 texts.append(block.get("text", ""))
                         text = "\n".join(texts)
-                    normalized = title_model_prompt_text(text).strip()
+                    normalized = recent_user_message_text(text)
                     if (
                         normalized
                         and text.strip() not in IGNORED_PROMPTS

@@ -303,6 +303,58 @@ class TabtitleWorkflowHookTests(unittest.TestCase):
             self.assertNotIn("Verbose plan-quick instructions", transition_prompt)
             self.assertNotIn("<skill", transition_prompt)
 
+    def test_plan_to_cook_transition_ignores_recent_skill_instruction_envelopes(self):
+        with hook_test_env() as (root, env, dirs):
+            prompt_log = root / "llm-prompts.jsonl"
+            install_fake_llm(root, env, transition="COOK", slug="should-not-be-used")
+            env["GHOSTTY_PEON_FAKE_LLM_PROMPTS"] = str(prompt_log)
+            seed_workstream(env, dirs, "session-plan-cook-noisy-recent", "plan", "debug-branch-command")
+            session_file = root / "session-plan-cook-noisy-recent.jsonl"
+            session_file.write_text(
+                json.dumps(
+                    {
+                        "message": {
+                            "role": "user",
+                            "content": '<skill name="ripple-check">Verbose ripple-check instructions.</skill>',
+                        }
+                    }
+                )
+                + "\n"
+                + json.dumps(
+                    {
+                        "message": {
+                            "role": "user",
+                            "content": '<skill name="plan-quick">Verbose plan-quick instructions.</skill>',
+                        }
+                    }
+                )
+                + "\n"
+                + json.dumps({"message": {"role": "user", "content": "implement this"}})
+                + "\n"
+            )
+
+            result = run_hook(
+                "tabtitle-hook.py",
+                {
+                    "session_id": "session-plan-cook-noisy-recent",
+                    "cwd": str(root / "project"),
+                    "hook_event_name": "UserPromptSubmit",
+                    "prompt": "implement this",
+                    "transcript_path": str(session_file),
+                    "session_file": str(session_file),
+                },
+                env,
+            )
+
+            assert_hook_ok(self, result)
+            self.assertEqual((dirs["debounce"] / "session-plan-cook-noisy-recent").read_text().splitlines()[1], "🌀 cook-debug-branch-command")
+            records = [json.loads(line) for line in prompt_log.read_text().splitlines()]
+            transition_prompt = next(record["prompt"] for record in records if record["tag"] == "workflow-transition")
+            self.assertIn("<current_message>implement this</current_message>", transition_prompt)
+            self.assertNotIn("ripple-check", transition_prompt)
+            self.assertNotIn("plan-quick", transition_prompt)
+            self.assertNotIn("Verbose", transition_prompt)
+
     def test_plan_quick_from_active_check_ignores_stale_transcript_artifact(self):
         with hook_test_env() as (root, env, dirs):
             calls = install_fake_llm(root, env, transition="NONE", slug="should-not-be-used")
