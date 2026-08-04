@@ -64,16 +64,25 @@ class TabtitleSkillTests(unittest.TestCase):
         )
         return self.run_prompt(prompt, generated_slug, f"session-{skill}")
 
-    def test_scope_skill_adds_stateless_prefix_and_hides_skill_instructions(self):
+    def test_scope_skill_forwards_request_and_bounded_description(self):
         title, llm_prompt = self.run_first_prompt(
             "scope",
             "Drastically simplify the workflow implementation.",
             "simplify-workflow-implementation",
+            "Describe the intended outcome.\n\n"
+            "Frame the task boundaries.\n\n"
+            "Confirm how success will be verified.\n\n"
+            "FOURTH PARAGRAPH MUST NOT BE FORWARDED.",
         )
 
         self.assertEqual(title, "🌀 scope-simplify-workflow-implementation")
-        self.assertIn("Drastically simplify the workflow implementation.", llm_prompt)
-        self.assertNotIn("Internal workflow instructions", llm_prompt)
+        self.assertIn(
+            "<user_request>Drastically simplify the workflow implementation.</user_request>",
+            llm_prompt,
+        )
+        self.assertIn("Describe the intended outcome.", llm_prompt)
+        self.assertIn("Confirm how success will be verified.", llm_prompt)
+        self.assertNotIn("FOURTH PARAGRAPH", llm_prompt)
 
     def test_prep_skill_adds_stateless_prefix(self):
         title, _ = self.run_first_prompt(
@@ -103,7 +112,80 @@ class TabtitleSkillTests(unittest.TestCase):
 
         self.assertEqual(title, "🌀 document-skill-envelope")
 
-    def test_prefix_is_not_duplicated_and_preserves_title_limit(self):
+    def test_ordinary_skill_markup_is_preserved_in_recent_transcript_context(self):
+        with hook_test_env() as (root, env, dirs):
+            prompts = install_fake_llm(root, env, "document-prompt-parsing")
+            session_id = "session-recent-markup"
+            transcript = root / "session.jsonl"
+            prior_message = 'Document how <skill name="scope"> appears in expanded prompts.'
+            transcript.write_text(
+                json.dumps({"message": {"role": "user", "content": prior_message}}) + "\n"
+            )
+            (dirs["terminal"] / session_id).write_text("term-test-1")
+            (dirs["debounce"] / session_id).write_text("1\n🌿 inspect-title-context")
+
+            result = run_hook(
+                "tabtitle-hook.py",
+                {
+                    "session_id": session_id,
+                    "cwd": str(root / "project"),
+                    "hook_event_name": "UserPromptSubmit",
+                    "prompt": "Now document the surrounding prompt parsing behavior in detail.",
+                    "transcript_path": str(transcript),
+                },
+                env,
+            )
+
+            assert_hook_ok(self, result)
+            llm_prompt = json.loads(prompts.read_text().splitlines()[0])["prompt"]
+            self.assertIn(f"<recent_message>{prior_message}</recent_message>", llm_prompt)
+
+    def test_empty_skill_request_forwards_description_for_title_generation(self):
+        title, llm_prompt = self.run_first_prompt(
+            "scope",
+            "",
+            "scope-empty-request",
+            "Turn a vague prompt into a well-bounded task.",
+        )
+
+        self.assertEqual(title, "🌀 scope-empty-request")
+        self.assertIn("<user_request></user_request>", llm_prompt)
+        self.assertIn(
+            "<skill_description>Turn a vague prompt into a well-bounded task.</skill_description>",
+            llm_prompt,
+        )
+
+    def test_empty_skill_invocation_bypasses_cooldown_and_requests_fresh_title(self):
+        with hook_test_env() as (root, env, dirs):
+            prompts = install_fake_llm(root, env, "frame-unclear-task")
+            session_id = "session-skill-cooldown"
+            (dirs["terminal"] / session_id).write_text("term-test-1")
+            (dirs["debounce"] / session_id).write_text("9999999999\n🌿 stale-title")
+            prompt = (
+                '<skill name="scope" location="/tmp/scope/SKILL.md">\n'
+                "<user-request></user-request>\n"
+                "<skill-instructions>Turn a vague prompt into a well-bounded task.</skill-instructions>\n"
+                "</skill>"
+            )
+
+            result = run_hook(
+                "tabtitle-hook.py",
+                {
+                    "session_id": session_id,
+                    "cwd": str(root / "project"),
+                    "hook_event_name": "UserPromptSubmit",
+                    "prompt": prompt,
+                },
+                env,
+            )
+
+            assert_hook_ok(self, result)
+            title = (dirs["debounce"] / session_id).read_text().splitlines()[1]
+            llm_prompt = json.loads(prompts.read_text().splitlines()[0])["prompt"]
+            self.assertEqual(title, "🌀 scope-frame-unclear-task")
+            self.assertIn("<current_title>none</current_title>", llm_prompt)
+
+    def test_prefix_and_skill_description_preserve_length_limits(self):
         from importlib.util import module_from_spec, spec_from_file_location
         from helpers import HOOKS_DIR
 
@@ -115,6 +197,10 @@ class TabtitleSkillTests(unittest.TestCase):
         prefixed = module.prefix_skill_slug("a" * 60, "prep")
         self.assertEqual(len(prefixed), 60)
         self.assertTrue(prefixed.startswith("prep-"))
+
+        description = module.truncate_skill_description("a" * 1000)
+        self.assertEqual(len(description), module.MAX_SKILL_DESCRIPTION_CHARS)
+        self.assertTrue(description.endswith("..."))
 
 
 if __name__ == "__main__":

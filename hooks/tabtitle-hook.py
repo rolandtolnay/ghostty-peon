@@ -37,6 +37,8 @@ from sound_utils import (
 COOLDOWN_SECONDS = 90
 MIN_PROMPT_LENGTH = 40
 MAX_MSG_CHARS = 3000
+MAX_SKILL_DESCRIPTION_CHARS = 600
+MAX_SKILL_DESCRIPTION_PARAGRAPHS = 3
 FALLBACK_WORKING_TITLE = "working"
 FALLBACK_RETRY_TIMESTAMP = "0"
 
@@ -46,6 +48,9 @@ IGNORED_PROMPTS = [
 ]
 
 USER_REQUEST_RE = re.compile(r"<user-request>(.*?)</user-request>", re.IGNORECASE | re.DOTALL)
+SKILL_INSTRUCTIONS_RE = re.compile(
+    r"<skill-instructions>(.*?)</skill-instructions>", re.IGNORECASE | re.DOTALL
+)
 SKILL_ENVELOPE_RE = re.compile(
     r"^\s*<skill\b[^>]*\bname=[\"']([^\"']+)[\"'][^>]*>(.*)</skill>\s*$",
     re.IGNORECASE | re.DOTALL,
@@ -190,35 +195,44 @@ def get_transcript_path(data: dict, session_id: str) -> str:
     return ""
 
 
-def expanded_skill_prompt(text: str) -> tuple[str, str]:
-    """Return the outer skill name and user request from an expanded skill envelope."""
+def truncate_skill_description(instructions: str) -> str:
+    """Return the opening skill blocks that describe its purpose and outcome."""
+    paragraphs = [
+        paragraph.strip()
+        for paragraph in re.split(r"\n\s*\n", html.unescape(instructions).strip())
+        if paragraph.strip()
+    ]
+    description = "\n\n".join(paragraphs[:MAX_SKILL_DESCRIPTION_PARAGRAPHS])
+    if len(description) <= MAX_SKILL_DESCRIPTION_CHARS:
+        return description
+    return description[: MAX_SKILL_DESCRIPTION_CHARS - 3].rstrip() + "..."
+
+
+def expanded_skill_prompt(text: str) -> tuple[str, str, str]:
+    """Return skill name, user request, and a short description from an expanded envelope."""
     if not isinstance(text, str):
-        return "", ""
+        return "", "", ""
     envelope = SKILL_ENVELOPE_RE.match(text)
     if not envelope:
-        return "", ""
-    requests = []
-    for match in USER_REQUEST_RE.finditer(envelope.group(2)):
-        request = html.unescape(match.group(1)).strip()
-        if request:
-            requests.append(request)
-    return envelope.group(1).strip().lower(), "\n\n".join(requests)
-
-
-def extract_skill_user_request(text: str) -> str:
-    """Return the original user request from a Pi skill-expanded prompt when present."""
-    return expanded_skill_prompt(text)[1]
+        return "", "", ""
+    body = envelope.group(2)
+    request_match = USER_REQUEST_RE.search(body)
+    user_request = html.unescape(request_match.group(1)).strip() if request_match else ""
+    instructions_match = SKILL_INSTRUCTIONS_RE.search(body)
+    description = truncate_skill_description(instructions_match.group(1)) if instructions_match else ""
+    return envelope.group(1).strip().lower(), user_request, description
 
 
 def title_model_prompt_text(prompt: str) -> str:
-    """Return the user-authored text that should be shown to title LLMs."""
-    return extract_skill_user_request(prompt) or prompt
-
-
-def explicit_skill_title_prefix(prompt: str) -> str:
-    """Return a title prefix only for a currently invoked high-value skill."""
-    name, _ = expanded_skill_prompt(prompt)
-    return name if name in SKILL_TITLE_PREFIXES else ""
+    """Return user request and bounded skill context for title generation."""
+    skill_name, user_request, skill_description = expanded_skill_prompt(prompt)
+    if not skill_name:
+        return prompt
+    return (
+        f"<invoked_skill>{skill_name}</invoked_skill>\n"
+        f"<user_request>{user_request}</user_request>\n"
+        f"<skill_description>{skill_description}</skill_description>"
+    )
 
 
 def prefix_skill_slug(slug: str, prefix: str) -> str:
@@ -233,8 +247,6 @@ def recent_user_message_text(text: str) -> str:
     """Return user-authored transcript text, skipping raw skill instruction envelopes."""
     if not isinstance(text, str):
         return ""
-    if "<skill" in text.lower():
-        return extract_skill_user_request(text).strip()
     return title_model_prompt_text(text).strip()
 
 
@@ -382,6 +394,7 @@ def generate_slug_result(
         "  title=old-feature, msg='Do that now for analytics package dependencies' → update-analytics-dependencies\n"
         "  title=old-feature, msg='Unrelated: audit feature flags' → audit-feature-flags\n"
         '\n'
+        'SKILL INVOCATIONS: current_message may contain invoked_skill, user_request, and skill_description tags. Prefer the user request when present. If it is empty, generate a useful title from the invoked skill and its description.\n'
         'IMAGE ATTACHMENTS: You cannot see attached images. Use only the surrounding text to title the task. If title=none and images are attached, prefer a concrete text-derived slug; if the text has no concrete topic, use investigate-screenshot rather than KEEP.\n'
         'Final rule: With an existing non-none title, choose KEEP unless the topic clearly changed. With title=none and a concrete message, choose a slug.'
     )
@@ -521,8 +534,9 @@ def main():
 
     data = json.load(sys.stdin)
     prompt = data.get("prompt", "")
+    skill_name, _, _ = expanded_skill_prompt(prompt)
     title_prompt = title_model_prompt_text(prompt)
-    skill_prefix = explicit_skill_title_prefix(prompt)
+    skill_prefix = skill_name if skill_name in SKILL_TITLE_PREFIXES else ""
     session_id = data.get("session_id", "unknown")
     if skip_subagent_payload(data, session_id, "tabtitle"):
         sys.exit(0)
@@ -550,19 +564,20 @@ def main():
     else:
         log(session_id, "tabtitle", f"skip {EMOJI_WORKING}: no established title yet")
 
-    skip_reason = should_skip(session_id, title_prompt)
+    skip_reason = None if skill_name else should_skip(session_id, title_prompt)
     if skip_reason:
         log(session_id, "tabtitle", f"skip: {skip_reason}")
         sys.exit(0)
 
+    model_current_title = "" if skill_name else semantic_current_title
     log(
         session_id,
         "tabtitle",
-        f"calling llm (current={semantic_current_title!r}, origin={len(origin_message)}chars, recent={len(recent_messages)}msgs)",
+        f"calling llm (current={model_current_title!r}, origin={len(origin_message)}chars, recent={len(recent_messages)}msgs)",
     )
     slug_result = generate_slug_result(
         title_prompt,
-        semantic_current_title,
+        model_current_title,
         origin_message,
         recent_messages,
         session_id,
