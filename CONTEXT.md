@@ -17,8 +17,8 @@ The optional `scope-` or `prep-` label added when that skill is explicitly invok
 _Avoid_: workflow state, inferred phase
 
 **Title Origin**:
-The user-authored prompt that established the current task slug and helps the model judge later topic changes.
-_Avoid_: skill instructions, transcript
+The bounded prompt context that established the current task slug and helps the model judge later topic changes.
+_Avoid_: full skill body, transcript
 
 **Status Emoji**:
 The leading symbol that reports whether the session is working, ready, waiting for input, or awaiting permission.
@@ -28,7 +28,8 @@ _Avoid_: workflow state
 
 - Every substantive prompt follows the same opportunistic title-generation path in Claude Code and Pi.
 - A **Skill Prefix** is derived only from the current explicit skill invocation. It is not persisted separately or inferred from conversation history.
-- Skill envelopes contribute their `<user-request>` to title generation; internal skill instructions are excluded.
+- Skill envelopes contribute their `<user-request>` plus at most the first three instruction blocks and 600 characters to title generation.
+- Explicit skill invocation requests a fresh title even during the normal rename cooldown; an empty `<user-request>` can be titled from the bounded skill description.
 - A **Title Origin** and recent user messages help distinguish continuation from a topic change.
 - Session replacement handoffs preserve the visible title but do not attach durable task or workflow identity.
 - **Status Emoji** changes are independent of task slug generation.

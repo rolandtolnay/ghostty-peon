@@ -293,7 +293,7 @@ Known gotchas:
 - A hook with `_CLAUDE_HOOK_NESTED=1` exits before normal logging, so no log line from the child process can be expected.
 
 **An explicit `scope` or `prep` skill title lacks its prefix:**
-Skill prefixes are stateless and come only from the current expanded `<skill name="...">` envelope. The title model still receives only the enclosed `<user-request>`.
+Skill prefixes are stateless and come only from the current expanded `<skill name="...">` envelope. The title model receives the enclosed `<user-request>` plus a skill description limited to the first three instruction blocks and 600 characters. Explicit skill invocations bypass the normal rename cooldown and are evaluated as fresh title requests, including when `<user-request>` is empty.
 
 ```sh
 grep -E "title_prompt=|llm returned|skill prefix ->|renamed" /tmp/pi-tab-hooks.log
