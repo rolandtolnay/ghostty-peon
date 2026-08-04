@@ -20,19 +20,13 @@ import json
 import os
 import re
 import socket
-import subprocess
 import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import runtime_config
 import title_state
-import workflow_judgment
-import workflow_model
-import workflow_state
 from sound_utils import (
     EMOJI_WORKING,
-    get_terminal_id,
     log,
     play_sound,
     set_status_emoji,
@@ -45,10 +39,6 @@ MIN_PROMPT_LENGTH = 40
 MAX_MSG_CHARS = 3000
 FALLBACK_WORKING_TITLE = "working"
 FALLBACK_RETRY_TIMESTAMP = "0"
-WORKFLOW_NO_SIGNAL = "no-signal"
-WORKFLOW_APPLIED = "applied"
-WORKFLOW_HANDLED_NO_TITLE = "handled-no-title"
-WORKFLOW_TRANSITION_PLAN_TO_COOK = "plan-to-cook"
 
 # Prompts to completely ignore — no rename, no history, no side effects.
 IGNORED_PROMPTS = [
@@ -56,6 +46,11 @@ IGNORED_PROMPTS = [
 ]
 
 USER_REQUEST_RE = re.compile(r"<user-request>(.*?)</user-request>", re.IGNORECASE | re.DOTALL)
+SKILL_ENVELOPE_RE = re.compile(
+    r"^\s*<skill\b[^>]*\bname=[\"']([^\"']+)[\"'][^>]*>(.*)</skill>\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+SKILL_TITLE_PREFIXES = {"scope", "prep"}
 
 FALLBACK_STOPWORDS = {
     "a",
@@ -148,196 +143,6 @@ def has_established_title(session_id: str) -> bool:
     return bool(clean_title) and not is_retryable_fallback_state(state)
 
 
-def canonical_slug_from_title(title: str) -> tuple[str, str]:
-    """Return (state, slug) when a clean title already has a workflow prefix."""
-    clean = strip_all_emojis(title).strip()
-    for state in workflow_model.WORKFLOW_STATES:
-        prefix = f"{state}-"
-        if clean.startswith(prefix):
-            slug = workflow_model.normalize_slug(clean[len(prefix):])
-            if slug:
-                return state, slug
-    return "", ""
-
-
-def workflow_artifact_candidates(
-    data: dict,
-    prompt: str,
-    cook_metadata: dict | None = None,
-    include_transcript: bool = True,
-) -> list[str]:
-    """Collect observable artifact path candidates from hook payload metadata."""
-    candidates: list[str] = []
-    for key in ("workflow_artifacts", "artifact_candidates"):
-        value = data.get(key)
-        if isinstance(value, list):
-            candidates.extend(item for item in value if isinstance(item, str))
-    for key in (
-        "cook_plan_source_path",
-        "cook_plan_source_absolute_path",
-        "source_path",
-        "source_absolute_path",
-    ):
-        value = data.get(key)
-        if isinstance(value, str):
-            candidates.append(value)
-    metadata = cook_metadata if isinstance(cook_metadata, dict) else data.get("cook_plan")
-    if isinstance(metadata, dict):
-        for key in ("sourcePath", "sourceAbsolutePath", "source_path", "source_absolute_path"):
-            value = metadata.get(key)
-            if isinstance(value, str):
-                candidates.append(value)
-    candidates.extend(artifact.path for artifact in workflow_model.extract_artifacts(prompt))
-    if include_transcript:
-        candidates.extend(transcript_artifact_candidates(data))
-    seen = set()
-    cleaned: list[str] = []
-    for candidate in candidates:
-        if candidate and candidate not in seen:
-            seen.add(candidate)
-            cleaned.append(candidate)
-    return cleaned
-
-
-def transcript_artifact_candidates(data: dict, max_entries: int = 20) -> list[str]:
-    """Return workflow artifact paths mentioned in recent transcript entries."""
-    session_file = data.get("transcript_path") or data.get("session_file")
-    if not isinstance(session_file, str) or not session_file:
-        return []
-    try:
-        with open(session_file) as f:
-            lines = f.readlines()[-max_entries:]
-    except OSError:
-        return []
-
-    candidates: list[str] = []
-    for line in lines:
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        for text in transcript_entry_texts(entry):
-            candidates.extend(artifact.path for artifact in workflow_model.extract_artifacts(text))
-    return candidates
-
-
-def transcript_entry_texts(entry: object) -> list[str]:
-    if not isinstance(entry, dict):
-        return []
-    texts: list[str] = []
-
-    message = entry.get("message")
-    if isinstance(message, dict):
-        texts.extend(content_texts(message.get("content")))
-
-    texts.extend(content_texts(entry.get("content")))
-
-    data = entry.get("data")
-    if isinstance(data, dict):
-        for key in ("readFiles", "writtenFiles", "workflow_artifacts", "artifact_candidates"):
-            value = data.get(key)
-            if isinstance(value, list):
-                texts.extend(item for item in value if isinstance(item, str))
-
-    return texts
-
-
-def content_texts(content: object) -> list[str]:
-    if isinstance(content, str):
-        return [content]
-    if not isinstance(content, list):
-        return []
-    texts: list[str] = []
-    for block in content:
-        if not isinstance(block, dict):
-            continue
-        text = block.get("text")
-        if isinstance(text, str):
-            texts.append(text)
-    return texts
-
-
-def cook_plan_metadata(data: dict) -> dict | None:
-    direct = data.get("cook_plan")
-    if _is_cook_plan_metadata(direct):
-        return direct
-    session_file = data.get("session_file") or data.get("transcript_path")
-    if not isinstance(session_file, str) or not session_file:
-        return None
-    return read_cook_plan_metadata(session_file)
-
-
-def read_cook_plan_metadata(session_file: str) -> dict | None:
-    try:
-        with open(session_file) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                metadata = _cook_plan_metadata_from_entry(entry)
-                if metadata:
-                    return metadata
-    except OSError:
-        return None
-    return None
-
-
-def _cook_plan_metadata_from_entry(entry: object) -> dict | None:
-    if not isinstance(entry, dict):
-        return None
-    candidates = []
-    for key in ("metadata", "data", "payload"):
-        value = entry.get(key)
-        if isinstance(value, dict):
-            candidates.append(value)
-    candidates.append(entry)
-    for candidate in candidates:
-        if _is_cook_plan_metadata(candidate):
-            return candidate
-    return None
-
-
-def _is_cook_plan_metadata(value: object) -> bool:
-    if not isinstance(value, dict):
-        return False
-    markers = [value.get("kind"), value.get("type"), value.get("customType"), value.get("name")]
-    if "cook-plan" in markers:
-        return True
-    nested = value.get("metadata")
-    return isinstance(nested, dict) and _is_cook_plan_metadata(nested)
-
-
-def current_branch_name(cwd: str) -> str:
-    if not isinstance(cwd, str) or not cwd:
-        return ""
-    commands = (
-        ["git", "symbolic-ref", "--short", "HEAD"],
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-    )
-    for command in commands:
-        try:
-            result = subprocess.run(
-                command,
-                cwd=cwd,
-                text=True,
-                capture_output=True,
-                timeout=1,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            continue
-        if result.returncode != 0:
-            continue
-        branch = result.stdout.strip()
-        if branch and branch != "HEAD":
-            return branch
-    return ""
-
-
 def should_skip(session_id: str, prompt: str) -> str | None:
     """Return a skip reason string, or None to proceed."""
     # First message always triggers (no debounce file yet)
@@ -385,24 +190,43 @@ def get_transcript_path(data: dict, session_id: str) -> str:
     return ""
 
 
-def extract_skill_user_request(text: str) -> str:
-    """Return the original user request from a Pi skill-expanded prompt when present."""
+def expanded_skill_prompt(text: str) -> tuple[str, str]:
+    """Return the outer skill name and user request from an expanded skill envelope."""
     if not isinstance(text, str):
-        return ""
-    lowered = text.lower()
-    if "<skill" not in lowered or "<user-request" not in lowered:
-        return ""
+        return "", ""
+    envelope = SKILL_ENVELOPE_RE.match(text)
+    if not envelope:
+        return "", ""
     requests = []
-    for match in USER_REQUEST_RE.finditer(text):
+    for match in USER_REQUEST_RE.finditer(envelope.group(2)):
         request = html.unescape(match.group(1)).strip()
         if request:
             requests.append(request)
-    return "\n\n".join(requests)
+    return envelope.group(1).strip().lower(), "\n\n".join(requests)
+
+
+def extract_skill_user_request(text: str) -> str:
+    """Return the original user request from a Pi skill-expanded prompt when present."""
+    return expanded_skill_prompt(text)[1]
 
 
 def title_model_prompt_text(prompt: str) -> str:
     """Return the user-authored text that should be shown to title LLMs."""
     return extract_skill_user_request(prompt) or prompt
+
+
+def explicit_skill_title_prefix(prompt: str) -> str:
+    """Return a title prefix only for a currently invoked high-value skill."""
+    name, _ = expanded_skill_prompt(prompt)
+    return name if name in SKILL_TITLE_PREFIXES else ""
+
+
+def prefix_skill_slug(slug: str, prefix: str) -> str:
+    """Add a stateless skill prefix while preserving the title length limit."""
+    if not slug or prefix not in SKILL_TITLE_PREFIXES or slug.startswith(f"{prefix}-"):
+        return slug
+    max_slug_length = 60 - len(prefix) - 1
+    return f"{prefix}-{slug[:max_slug_length].rstrip('-')}"
 
 
 def recent_user_message_text(text: str) -> str:
@@ -690,225 +514,6 @@ def is_valid_slug(slug: str) -> bool:
     return True
 
 
-def workflow_transition_kind(is_first_message: bool, current_state: str, selected_skills: tuple[str, ...]) -> str:
-    if workflow_model.deterministic_state(selected_skills):
-        return ""
-    if is_first_message and not current_state:
-        return "ordinary-to-check"
-    if current_state == workflow_model.CHECK:
-        return "check-to-prep"
-    if current_state == workflow_model.PLAN:
-        return WORKFLOW_TRANSITION_PLAN_TO_COOK
-    return ""
-
-
-def workflow_transition_only(data: dict) -> str:
-    value = data.get("workflow_transition_only", "")
-    return value if value == WORKFLOW_TRANSITION_PLAN_TO_COOK else ""
-
-
-def judge_workflow_transition(
-    kind: str,
-    prompt: str,
-    current_state: str,
-    current_title: str,
-    origin_message: str,
-    recent_messages: list[str],
-    session_id: str,
-) -> str:
-    if not kind:
-        return ""
-    result = workflow_judgment.judge(
-        workflow_judgment.JudgmentContext(
-            kind=kind,
-            prompt=prompt,
-            current_state=current_state,
-            current_title=current_title,
-            origin_message=origin_message,
-            recent_messages=tuple(recent_messages),
-        )
-    )
-    log(session_id, "tabtitle", f"workflow judgment {kind} -> {result.transition or 'none'}")
-    return result.transition
-
-
-def maybe_apply_canonical_workflow(
-    data: dict,
-    session_id: str,
-    prompt: str,
-    title_prompt: str,
-    current_title: str,
-    semantic_current_title: str,
-    current_timestamp: str,
-    is_first_message: bool,
-    origin_message: str,
-    recent_messages: list[str],
-    image_count: int,
-) -> str:
-    """Apply Pi Canonical Workflow Mode and report whether ordinary slug flow may continue."""
-    transition_only = workflow_transition_only(data)
-    if runtime_config.namespace() != "pi":
-        return WORKFLOW_HANDLED_NO_TITLE if transition_only else WORKFLOW_NO_SIGNAL
-
-    cook_metadata = cook_plan_metadata(data)
-    selected_skills = workflow_model.invoked_skill_names(prompt)
-    if cook_metadata and "cook-plan" not in selected_skills:
-        selected_skills = (*selected_skills, "cook-plan")
-    signal_state = workflow_model.deterministic_state(selected_skills)
-    artifact_candidates = [] if transition_only else workflow_artifact_candidates(data, prompt, cook_metadata, include_transcript=False)
-    has_explicit_signal = bool(signal_state or artifact_candidates)
-    term_id = get_terminal_id(session_id) or ""
-    active_resolved = workflow_state.resolve_active(session_id=session_id, terminal_id=term_id)
-    # Transcript artifacts provide context for an explicitly invoked workflow
-    # phase; they are not workflow intent by themselves. Otherwise an ordinary
-    # conversation can be attached to an old Workstream merely because a stale
-    # PRD path rotates into the recent transcript window.
-    if signal_state and not transition_only and not (
-        active_resolved
-        and active_resolved.state == workflow_model.CHECK
-        and signal_state == workflow_model.PLAN
-        and not artifact_candidates
-    ):
-        seen_artifacts = set(artifact_candidates)
-        for candidate in transcript_artifact_candidates(data):
-            if candidate not in seen_artifacts:
-                seen_artifacts.add(candidate)
-                artifact_candidates.append(candidate)
-        has_explicit_signal = bool(signal_state or artifact_candidates)
-    artifact_resolved = workflow_state.resolve_by_artifact(tuple(artifact_candidates)) if artifact_candidates else None
-    starts_new_workstream = bool(
-        active_resolved
-        and not artifact_resolved
-        and workflow_model.starts_new_workstream(active_resolved.state, signal_state)
-    )
-    resolved = artifact_resolved or (None if starts_new_workstream else active_resolved)
-
-    title_state_name, title_slug = canonical_slug_from_title(current_title)
-    active_binding = bool(active_resolved and resolved and active_resolved.id == resolved.id)
-    current_workflow_state = resolved.state if resolved else (title_state_name if has_explicit_signal else "")
-    inherited_slug = "" if starts_new_workstream else (
-        (resolved.slug if resolved else "")
-        or (title_slug if title_slug and (resolved or has_explicit_signal) else "")
-        or semantic_current_title
-    )
-    artifact_binding_slug = artifact_resolved.slug if artifact_resolved else ""
-
-    transition_kind = workflow_transition_kind(is_first_message, current_workflow_state, selected_skills)
-    if transition_only and (not active_resolved or active_resolved.state != workflow_model.PLAN or transition_kind != transition_only):
-        log(session_id, "tabtitle", f"workflow transition-only {transition_only} skipped from state={current_workflow_state!r}")
-        return WORKFLOW_HANDLED_NO_TITLE
-
-    transition = judge_workflow_transition(
-        transition_kind,
-        title_prompt,
-        current_workflow_state,
-        current_title,
-        origin_message,
-        recent_messages,
-        session_id,
-    )
-
-    def build_context(branch_name: str = "") -> workflow_model.WorkflowContext:
-        return workflow_model.WorkflowContext(
-            current_state=current_workflow_state,
-            prompt="",
-            selected_skills=selected_skills,
-            artifact_candidates=tuple(artifact_candidates),
-            branch_name=branch_name,
-            inherited_slug=inherited_slug,
-            transition=transition,
-            active_binding=active_binding,
-            artifact_binding_slug=artifact_binding_slug,
-        )
-
-    branch_name = ""
-    decision = workflow_model.decide(build_context())
-    if decision.needs_slug and decision.state in {workflow_model.COOK, workflow_model.REVIEW}:
-        cwd = data.get("cwd", "") if isinstance(data.get("cwd"), str) else ""
-        branch_name = current_branch_name(cwd)
-        if branch_name:
-            decision = workflow_model.decide(build_context(branch_name))
-
-    if decision.needs_slug:
-        slug_current_title = "" if starts_new_workstream else semantic_current_title
-        log(
-            session_id,
-            "tabtitle",
-            f"calling llm for workflow slug (state={decision.state!r}, current={slug_current_title!r})",
-        )
-        slug_result = generate_slug_result(
-            title_prompt,
-            slug_current_title,
-            origin_message,
-            recent_messages,
-            session_id,
-            image_count,
-        )
-        slug = slug_result.slug
-        log(session_id, "tabtitle", f"workflow slug llm returned {slug!r}")
-        if not slug and not current_title and image_count:
-            slug = fallback_slug_for_image_prompt(title_prompt)
-            log(session_id, "tabtitle", f"workflow image fallback returned {slug!r}")
-        if not slug:
-            log(session_id, "tabtitle", "workflow -> handled without title (missing slug)")
-            return WORKFLOW_HANDLED_NO_TITLE
-        decision = workflow_model.WorkflowDecision(workflow_model.ACTION_SET, decision.state, slug)
-
-    if not decision.state or not decision.slug:
-        if has_explicit_signal or active_resolved or artifact_resolved:
-            log(session_id, "tabtitle", "workflow -> handled without title (no decision)")
-            return WORKFLOW_HANDLED_NO_TITLE
-        return WORKFLOW_NO_SIGNAL
-
-    canonical_title = decision.canonical_title
-    now = str(time.time())
-    changed = canonical_title != current_title
-    timestamp = now if changed else current_timestamp
-
-    if not set_status_emoji(session_id, EMOJI_WORKING, canonical_title, timestamp, "tabtitle"):
-        log(session_id, "tabtitle", f"workflow set_status_emoji failed for {canonical_title!r}")
-        return WORKFLOW_APPLIED
-
-    cwd = data.get("cwd", "") if isinstance(data.get("cwd"), str) else ""
-    binding_args = {
-        "session_id": session_id,
-        "terminal_id": term_id,
-        "state": decision.state,
-        "slug": decision.slug,
-        "cwd": cwd,
-        "branch": branch_name,
-        "artifacts": tuple(artifact_candidates),
-        "title": canonical_title,
-    }
-    binding = workflow_model.binding_action(
-        workflow_model.WorkflowBindingContext(
-            active_workstream_id=active_resolved.id if active_resolved else "",
-            artifact_workstream_id=artifact_resolved.id if artifact_resolved else "",
-            starts_new_workstream=starts_new_workstream,
-        )
-    )
-    if binding == workflow_model.BINDING_REPLACE_ACTIVE:
-        workflow_state.replace_active_workstream(artifact_resolved.id, **binding_args)
-    elif binding == workflow_model.BINDING_ATTACH_ARTIFACT:
-        workflow_state.attach_to_existing_workstream(artifact_resolved.id, **binding_args)
-    elif binding == workflow_model.BINDING_CREATE_REPLACING_ACTIVE:
-        workflow_state.create_replacing_active_workstream(**binding_args)
-    elif binding == workflow_model.BINDING_KEEP_ACTIVE:
-        workflow_state.attach_to_existing_workstream(active_resolved.id, **binding_args)
-    else:
-        workflow_state.create_workstream(**binding_args)
-
-    if decision.action == workflow_model.ACTION_KEEP or not changed:
-        log(session_id, "tabtitle", f"workflow -> keep ({canonical_title!r})")
-        return WORKFLOW_APPLIED
-
-    log(session_id, "tabtitle", f"workflow -> {EMOJI_WORKING} renamed ({canonical_title!r})")
-    play_sound("task.acknowledge", session_id)
-    if is_first_message or not title_state.read_origin(session_id):
-        title_state.write_origin(session_id, title_prompt, max_chars=MAX_MSG_CHARS)
-    return WORKFLOW_APPLIED
-
-
 def main():
     # Guard against recursive execution from nested claude subprocesses
     if os.environ.get("_CLAUDE_HOOK_NESTED"):
@@ -917,6 +522,7 @@ def main():
     data = json.load(sys.stdin)
     prompt = data.get("prompt", "")
     title_prompt = title_model_prompt_text(prompt)
+    skill_prefix = explicit_skill_title_prefix(prompt)
     session_id = data.get("session_id", "unknown")
     if skip_subagent_payload(data, session_id, "tabtitle"):
         sys.exit(0)
@@ -944,22 +550,6 @@ def main():
     else:
         log(session_id, "tabtitle", f"skip {EMOJI_WORKING}: no established title yet")
 
-    workflow_result = maybe_apply_canonical_workflow(
-        data,
-        session_id,
-        prompt,
-        title_prompt,
-        current_title,
-        semantic_current_title,
-        current_timestamp,
-        is_first_message,
-        origin_message,
-        recent_messages,
-        image_count,
-    )
-    if workflow_result != WORKFLOW_NO_SIGNAL:
-        sys.exit(0)
-
     skip_reason = should_skip(session_id, title_prompt)
     if skip_reason:
         log(session_id, "tabtitle", f"skip: {skip_reason}")
@@ -983,6 +573,9 @@ def main():
     if not slug and not current_title and image_count:
         slug = fallback_slug_for_image_prompt(title_prompt)
         log(session_id, "tabtitle", f"image fallback returned {slug!r}")
+    if slug and skill_prefix:
+        slug = prefix_skill_slug(slug, skill_prefix)
+        log(session_id, "tabtitle", f"skill prefix -> {slug!r}")
 
     now = str(time.time())
     if slug:

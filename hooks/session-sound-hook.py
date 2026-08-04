@@ -22,9 +22,7 @@ if os.environ.get("_CLAUDE_NO_SOUND"):
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lifecycle_policy
-import title_handoff
 import title_state
-import workflow_state
 from sound_utils import (
     assign_unit,
     capture_terminal_id,
@@ -114,15 +112,6 @@ def restore_replacement_handoff(label: str) -> str | None:
         log(session_id, "session", f"{label} -> replaced terminal owner {replaced!r}")
     log(session_id, "session", f"{label} -> restored replacement terminal_id={term_id!r}")
 
-    old_session_id = title_handoff.replacement_session_key(previous_session_file)
-    transferred = workflow_state.transfer_binding(
-        old_session_id=old_session_id,
-        new_session_id=session_id,
-        terminal_id=term_id,
-    )
-    if transferred:
-        log(session_id, "session", f"{label} -> workflow binding transferred ({transferred.state}-{transferred.slug})")
-
     title = handoff.get("title", "")
     if title:
         try:
@@ -191,12 +180,8 @@ if source in {"startup", "new", "fork"}:
     if unit:
         play_sound("session.start", session_id)
 elif source == "clear":
-    existing_term_id = get_terminal_id(session_id) or ""
     had_debounce = title_state.exists(session_id)
     title_state.delete(session_id, include_origin=False)
-    if lifecycle_policy.is_pi(runtime):
-        workflow_state.deactivate(session_id=session_id, terminal_id=existing_term_id)
-        log(session_id, "session", "clear -> deactivated workflow bindings")
     if had_debounce:
         log(session_id, "session", "clear -> debounce file deleted")
     else:
