@@ -321,6 +321,26 @@ def is_timeout_error(error: Exception) -> bool:
     return isinstance(error, (TimeoutError, socket.timeout)) or "timed out" in str(error).lower()
 
 
+def initial_title_system_prompt() -> str:
+    """Return the slug-only contract used when a session has no title yet."""
+    return (
+        "You label a new terminal tab so a developer can find the coding session at a glance.\n"
+        "Output exactly one lowercase hyphenated slug, usually 2-5 words and at most 60 characters.\n"
+        "Summarize the concrete task or question in current_message. Start with a specific action verb when useful: fix, add, refactor, implement, extract, migrate, remove, replace, create, compare, evaluate, plan, debug, configure, restore, test, investigate, triage, update, review, setup.\n"
+        "For an informational question, describe the comparison or investigation rather than answering it.\n"
+        "Short slash commands, ticket commands, and mechanical requests still need a slug. If context is incomplete, produce the most conservative useful slug supported by the message.\n"
+        "If current_message contains invoked_skill, user_request, and skill_description tags, prefer the user request. When it is empty, title the invoked skill from its description.\n"
+        "You cannot see attached images. Use surrounding text; if it has no concrete topic, output investigate-screenshot.\n"
+        "Never output prose, quotes, markdown, none, or an empty response.\n\n"
+        "Examples:\n"
+        "  msg='Is hand-rolling HTTP acceptable, or what does depending on OkHttp cost?' → compare-okhttp-dependency-cost\n"
+        "  msg='Extract the Ghostty hooks into a separate repo' → extract-ghostty-peon-repo\n"
+        "  msg='/work-ticket MIN-163' → work-ticket-min-163\n"
+        "  msg='Can you present the plan again for approval?' → review-current-plan\n"
+        "  msg='Can you implement the second option?' → implement-second-option"
+    )
+
+
 def generate_slug_result(
     prompt: str,
     current_title: str,
@@ -330,7 +350,10 @@ def generate_slug_result(
     image_count: int = 0,
 ) -> SlugGenerationResult:
     """Call local Ollama model to generate a tab title slug with failure status."""
-    system = (
+    if not current_title:
+        system = initial_title_system_prompt()
+    else:
+        system = (
         'You label terminal tabs so a developer can find the right coding session at a glance.\n'
         'Output either KEEP or a lowercase hyphenated slug, usually 2-5 words.\n'
         'Start slugs with a specific action verb when the task has one: fix, add, refactor, implement, extract, migrate, remove, replace, create, evaluate, plan, debug, configure, restore, test, investigate, triage, update, review, setup.\n'

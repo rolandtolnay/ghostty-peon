@@ -198,7 +198,7 @@ Multiple sessions interleave in the log but are fully separable by `[sid]`. Date
 Look for `tabtitle` lines. The log will show exactly why:
 - `skip: prompt too short (N < 40 chars)` — message was too short
 - `skip: cooldown (Xs elapsed, 90s required)` — still within the cooldown window (cooldown only resets on actual renames, not on same-slug or KEEP results)
-- `llm returned None` — Ollama timed out (10s timeout) or returned an invalid slug
+- `llm returned None` — Ollama timed out, returned an invalid slug, or returned `KEEP` for an established title; a titleless prompt never offers `KEEP`
 - `llm error: ...` — Ollama not running or model not available
 - `set_tab_title failed` — Ghostty AppleScript failed (stale/missing terminal, Ghostty not running, or AppleScript error)
 - `target: SKIPPED (no term_id, refusing unsafe fallback)` — terminal UUID was lost
@@ -425,7 +425,7 @@ The most complex hook. Flow:
 5. **Generate slug**: Call local Ollama model via `client.py` (10s timeout)
 6. **Set title + sound**: If new slug generated, set title with 🌀, play `task.acknowledge`, and reset cooldown timestamp. If slug matches current title or LLM returns KEEP, the cooldown timestamp is preserved — so subsequent messages can be evaluated sooner.
 
-The slug prompt asks the model to output a 2-5 word hyphenated slug or `KEEP` if the current title still fits. Validation rejects anything with spaces, special characters, error markers, or over 40 chars.
+A titleless session uses a slug-only prompt contract. Once a title exists, the model may output a 2-5 word hyphenated slug or `KEEP` if the current title still fits. Validation rejects anything with spaces, special characters, error markers, or over 60 characters.
 
 ### `tab-attention-hook.py` (attention emoji + clear)
 

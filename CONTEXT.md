@@ -27,6 +27,7 @@ _Avoid_: workflow state
 ## Relationships
 
 - Every substantive prompt follows the same opportunistic title-generation path in Claude Code and Pi.
+- A session without a title asks only for a task slug; `KEEP` is valid only when an established title exists.
 - A **Skill Prefix** is derived only from the current explicit skill invocation. It is not persisted separately or inferred from conversation history.
 - Skill envelopes contribute their `<user-request>` plus at most the first three instruction blocks and 600 characters to title generation.
 - Explicit skill invocation requests a fresh title even during the normal rename cooldown; an empty `<user-request>` can be titled from the bounded skill description.

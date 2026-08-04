@@ -83,6 +83,40 @@ class SlugValidationTests(unittest.TestCase):
         self.assertTrue(self.tabtitle.is_timeout_error(TimeoutError("timed out")))
         self.assertFalse(self.tabtitle.is_timeout_error(ValueError("bad response")))
 
+    def test_titleless_http_question_prompt_does_not_offer_keep(self):
+        prompt = (
+            "Regarding the HTTP client: is hand-rolling HTTP logic idiomatic for Android SDKs, "
+            "or is it acceptable to bundle OkHttp? What is the cost of depending on OkHttp?"
+        )
+        systems = []
+
+        def contract_sensitive_model(_prompt, *, system, **_kwargs):
+            systems.append(system)
+            return "KEEP" if "KEEP" in system else "compare-okhttp-dependency-cost"
+
+        with patch("client.llm", side_effect=contract_sensitive_model):
+            result = self.tabtitle.generate_slug_result(prompt, "", session_id="http-client-title")
+
+        self.assertEqual(result.slug, "compare-okhttp-dependency-cost")
+        self.assertNotIn("KEEP", systems[0])
+
+    def test_existing_title_prompt_still_accepts_keep(self):
+        systems = []
+
+        def keep_model(_prompt, *, system, **_kwargs):
+            systems.append(system)
+            return "KEEP"
+
+        with patch("client.llm", side_effect=keep_model):
+            result = self.tabtitle.generate_slug_result(
+                "Add refresh-token coverage too.",
+                "fix-auth-token",
+                session_id="existing-title",
+            )
+
+        self.assertIsNone(result.slug)
+        self.assertIn("KEEP", systems[0])
+
     def test_should_skip_does_not_cool_down_fallback_title(self):
         with hook_test_env() as (_root, env, dirs), patch.dict(os.environ, env, clear=False):
             session_id = "session-fallback"
