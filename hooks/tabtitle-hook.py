@@ -759,7 +759,11 @@ def maybe_apply_canonical_workflow(
     has_explicit_signal = bool(signal_state or artifact_candidates)
     term_id = get_terminal_id(session_id) or ""
     active_resolved = workflow_state.resolve_active(session_id=session_id, terminal_id=term_id)
-    if not transition_only and not (
+    # Transcript artifacts provide context for an explicitly invoked workflow
+    # phase; they are not workflow intent by themselves. Otherwise an ordinary
+    # conversation can be attached to an old Workstream merely because a stale
+    # PRD path rotates into the recent transcript window.
+    if signal_state and not transition_only and not (
         active_resolved
         and active_resolved.state == workflow_model.CHECK
         and signal_state == workflow_model.PLAN

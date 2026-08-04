@@ -550,6 +550,62 @@ class TabtitleWorkflowHookTests(unittest.TestCase):
             self.assertEqual((dirs["debounce"] / "session-ordinary").read_text().splitlines()[1], "🌀 ordinary-pi-title")
             self.assertEqual(call_tags(calls), ["workflow-transition", "tabtitle"])
 
+    def test_ordinary_followup_ignores_stale_workflow_artifact_in_transcript(self):
+        with hook_test_env() as (root, env, dirs):
+            calls = install_fake_llm(root, env, transition="NONE", slug="investigate-java-consumer")
+            session_file = root / "session-ordinary-followup.jsonl"
+            stale_artifact = "/repo/etc/prd/android-pos-pairing-sdk.md"
+            session_file.write_text(
+                json.dumps(
+                    {
+                        "type": "tool_result",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"Earlier context referenced `{stale_artifact}`.",
+                            }
+                        ],
+                    }
+                )
+                + "\n"
+            )
+            (dirs["terminal"] / "session-ordinary-followup").write_text("term-current")
+            (dirs["debounce"] / "session-ordinary-followup").write_text("123\n🌿 investigate-polling-solution")
+
+            sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "hooks"))
+            import workflow_state
+            with patch.dict(os.environ, env, clear=True):
+                workflow_state.create_workstream(
+                    session_id="stale-session",
+                    terminal_id="stale-term",
+                    state="prep",
+                    slug="work-ticket-syn-544",
+                    artifacts=(stale_artifact,),
+                )
+
+            result = run_hook(
+                "tabtitle-hook.py",
+                {
+                    "session_id": "session-ordinary-followup",
+                    "cwd": str(root / "project"),
+                    "hook_event_name": "UserPromptSubmit",
+                    "prompt": "Explain whether the Java consumer is a test suite or translation layer.",
+                    "transcript_path": str(session_file),
+                    "session_file": str(session_file),
+                },
+                env,
+            )
+
+            assert_hook_ok(self, result)
+            self.assertEqual(
+                (dirs["debounce"] / "session-ordinary-followup").read_text().splitlines()[1],
+                "🌀 investigate-java-consumer",
+            )
+            self.assertEqual(call_tags(calls), ["tabtitle"])
+            with patch.dict(os.environ, env, clear=True):
+                self.assertIsNone(workflow_state.resolve_active(session_id="session-ordinary-followup"))
+            self.assertNotIn("prep-work-ticket-syn-544", read_log(root))
+
     def test_explicit_workflow_signal_without_slug_does_not_fall_through_to_ordinary_title(self):
         with hook_test_env() as (root, env, dirs):
             calls = install_fake_llm(root, env, transition="NONE", slug="")
