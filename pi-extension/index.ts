@@ -16,6 +16,7 @@ import {
 	beforeAgentStartPayload,
 	compactTokenCount,
 	extractAssistantText,
+	hookSessionId,
 	isQuestionToolName,
 	mapSessionStartReason,
 	permissionHookEventName,
@@ -33,17 +34,18 @@ function handlePermissionEvent(data: unknown) {
 
 	const hookEventName = permissionHookEventName(event.phase);
 	if (!hookEventName) return;
+	const id = hookSessionId(event.sessionId);
 
 	void runHook(
 		"tab-attention-hook.py",
 		{
 			hook_event_name: hookEventName,
 			tool_name: event.toolName || "unknown",
-			session_id: event.sessionId,
+			session_id: id,
 			cwd: event.cwd,
 		},
 		event.cwd,
-		event.sessionId,
+		id,
 		{ timeoutMs: FAST_HOOK_TIMEOUT_MS },
 	);
 }
@@ -55,7 +57,7 @@ export default function (pi: ExtensionAPI) {
 		if (!isInteractiveGhostty(ctx)) return undefined;
 		const id = sessionId(ctx);
 		const source = mapSessionStartReason(event.reason);
-		runnerLog(id, `event session_start reason=${event.reason} source=${source ?? "skip"} file=${ctx.sessionManager.getSessionFile() ?? ""} prev=${event.previousSessionFile ?? ""}`);
+		runnerLog(id, `event session_start reason=${event.reason} source=${source ?? "skip"} instance=${process.pid} file=${ctx.sessionManager.getSessionFile() ?? ""} prev=${event.previousSessionFile ?? ""}`);
 		if (!source) return undefined;
 		await runHook(
 			"session-sound-hook.py",

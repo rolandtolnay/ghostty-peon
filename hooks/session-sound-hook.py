@@ -175,7 +175,7 @@ if source in {"startup", "new", "fork"}:
     unit = assign_unit(session_id, cwd)
     log(session_id, "session", f"{source} -> assigned unit={unit!r}")
     if not apply_title_handoff(term_id):
-        # Helpful for process restarts where the same persisted Pi session starts again.
+        # Restore state when a lifecycle start reuses this hook session key.
         restore_existing_title()
     if unit:
         play_sound("session.start", session_id)

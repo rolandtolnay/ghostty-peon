@@ -109,7 +109,7 @@ HH:MM:SS.mmm [sid] hook       | message
 ```
 
 - `HH:MM:SS.mmm` — wall-clock timestamp with millisecond precision
-- `[sid]` — last 6 characters of the full session ID (stable within a session, unique across concurrent sessions)
+- `[sid]` — last 6 characters of the conversation ID; two Pi processes opening the same conversation share this suffix. Pi `session_start` runner lines include `instance=<pid>` to distinguish them.
 - `hook` — left-padded to 10 chars. Values: `session`, `tabtitle`, `attention`, `stop-q`, `plan-accept`, `sound`
 - `message` — free-form, always starts with one of: an action (`startup ->`, `set ->`, `cleared attention ->`), a skip reason (`skip: ...`), a delegation (`calling llm`, `llm ->`), or a failure (`set_tab_title failed`, `llm error`)
 
@@ -314,6 +314,11 @@ Useful checks:
 ```sh
 grep -E "event session_shutdown reason=|replacement handoff written|restored replacement terminal_id|restored replacement title|captured terminal_id" /tmp/pi-tab-hooks.log
 ```
+
+**Pi tab stays 🌿 across subsequent prompts:**
+If later prompts log `target: SKIPPED (no term_id, refusing unsafe fallback)` and tool results show `title=''`, check for another process resuming and quitting the same conversation. State keyed only by conversation ID allowed that copy to overwrite the original terminal target and delete its title/terminal state on quit.
+
+Pi hook state now uses `<pid>-<conversation-id>` keys, and replacement handoffs are process-scoped. A copy can no longer delete the original's state. Missing targets still never fall back to the focused tab. When upgrading from conversation-only keys, quit and restart each existing Pi process in its own focused Ghostty tab; `/reload` alone does not initialize the new state keys or recover an already-lost terminal target. No reinstall is needed with the symlink layout below. Do not copy an old target from logs: it may belong to a different live tab.
 
 **Stop-question / ⭐ vs 🌿 status is wrong:**
 The stop hook is intentionally heuristic:
@@ -586,7 +591,7 @@ The extension runs only in interactive Ghostty sessions so non-interactive Pi ru
 
 ### Pi Logs and State
 
-Pi uses a separate runtime namespace from Claude Code:
+Pi uses a separate runtime namespace from Claude Code. Per-session files are keyed by `<pid>-<conversation-id>` so multiple processes can open the same conversation independently. Keys survive `/reload` and session switches within that process; a fresh process captures its own terminal and generates a title on its first substantive prompt.
 
 ```text
 /tmp/pi-tab-hooks.log
@@ -666,7 +671,7 @@ Expected:
 - `/tmp/pi-tab-hooks.log` receives `runner` and hook log lines after Pi events.
 
 After Pi extension changes:
-- Run `/reload` in Pi or restart Pi for TypeScript extension changes under `pi-extension/`.
+- Run `/reload` in Pi or restart Pi for TypeScript extension changes under `pi-extension/`. The upgrade from conversation-only to process-scoped state keys requires a one-time restart, not just `/reload`.
 - Python hook changes are picked up by the next hook subprocess if the installed `repo` symlink points at this checkout.
 - Reinstall only when the managed shim/install layout changes, or when symlink verification fails.
 

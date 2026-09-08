@@ -22,6 +22,24 @@ class EventMappingTests(unittest.TestCase):
         )
         return result.stdout.strip()
 
+    def test_hook_identity_survives_reload_and_matches_permission_events(self):
+        script = textwrap.dedent(
+            """
+            import { sessionId } from './pi-extension/event-mapping.ts';
+            const reloaded = await import('./pi-extension/event-mapping.ts?reload');
+            const ctx = { sessionManager: { getSessionId: () => 'conversation-1' } };
+            const first = sessionId(ctx);
+            console.log(JSON.stringify({
+              reloadMatches: reloaded.sessionId(ctx) === first,
+              permissionMatches: reloaded.hookSessionId('conversation-1') === first,
+              switchDiffers: reloaded.hookSessionId('conversation-2') !== first,
+            }));
+            """
+        )
+        self.assertEqual(json.loads(self.run_node(script)), {
+            "reloadMatches": True, "permissionMatches": True, "switchDiffers": True,
+        })
+
     def test_extract_assistant_text_includes_question_tool_prompt(self):
         script = textwrap.dedent(
             """

@@ -39,6 +39,11 @@ def replacement_session_key(session_file_or_id: str) -> str:
 
 def replacement_handoff_path(session_file_or_id: str) -> str:
     key = replacement_session_key(session_file_or_id)
+    # The same conversation can be resumed concurrently in different tabs.
+    # Only the Pi process performing the switch may consume its handoff.
+    instance_id = os.environ.get("GHOSTTY_PEON_INSTANCE_ID", "") if runtime_config.namespace() == "pi" else ""
+    if instance_id:
+        key = f"{instance_id}:{key}"
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]
     return os.path.join(handoff_dir(), f"replacement-{digest}")
 

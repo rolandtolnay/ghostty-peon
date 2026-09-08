@@ -34,6 +34,24 @@ class TitleHandoffTests(unittest.TestCase):
                 self.assertEqual(title_handoff.consume("term-1"), "🌀 fix-tabs")
                 self.assertFalse(handoff_path.exists())
 
+    def test_replacement_handoffs_are_isolated_between_pi_processes(self):
+        with hook_test_env() as (_root, env, _dirs):
+            with patch.dict(os.environ, env, clear=True):
+                target = "/tmp/2026-09-08_shared-session.jsonl"
+                os.environ["GHOSTTY_PEON_INSTANCE_ID"] = "101"
+                self.assertTrue(title_handoff.write_replacement(target, "term-first", "🌿 first"))
+                os.environ["GHOSTTY_PEON_INSTANCE_ID"] = "202"
+                self.assertIsNone(title_handoff.consume_replacement("202-shared-session", target))
+                self.assertTrue(title_handoff.write_replacement(target, "term-second", "⭐ second"))
+                os.environ["GHOSTTY_PEON_INSTANCE_ID"] = "101"
+                self.assertEqual(title_handoff.consume_replacement("101-shared-session", target), {
+                    "terminal_id": "term-first", "title": "🌿 first",
+                })
+                os.environ["GHOSTTY_PEON_INSTANCE_ID"] = "202"
+                self.assertEqual(title_handoff.consume_replacement("202-shared-session", target), {
+                    "terminal_id": "term-second", "title": "⭐ second",
+                })
+
     def test_consume_deletes_and_rejects_stale_or_invalid_handoff(self):
         with hook_test_env() as (_root, env, dirs):
             with patch.dict(os.environ, env, clear=True):

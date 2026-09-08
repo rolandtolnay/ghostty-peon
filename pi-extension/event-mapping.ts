@@ -8,8 +8,15 @@ export type PermissionEvent = {
 	toolName?: string;
 };
 
+// A persisted conversation may be open in multiple Pi processes at once.
+// PID is stable across /reload and in-process session switches, unlike a
+// module-local random ID. Keep the conversation suffix for log correlation.
+export function hookSessionId(conversationId: string) {
+	return `${process.pid}-${conversationId || "unknown"}`;
+}
+
 export function sessionId(ctx: ExtensionContext) {
-	return ctx.sessionManager.getSessionId() || "unknown";
+	return hookSessionId(ctx.sessionManager.getSessionId());
 }
 
 export function basePayload(ctx: ExtensionContext, id = sessionId(ctx)) {

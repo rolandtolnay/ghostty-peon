@@ -59,6 +59,7 @@ export function buildHookEnv(cwd: string) {
 	const env: NodeJS.ProcessEnv = {
 		...process.env,
 		GHOSTTY_PEON_NAMESPACE: "pi",
+		GHOSTTY_PEON_INSTANCE_ID: String(process.pid),
 		GHOSTTY_PEON_LOG_FILE: PI_LOG_FILE,
 		GHOSTTY_PEON_LOG_PREV_FILE: "/tmp/pi-tab-hooks.prev.log",
 		GHOSTTY_PEON_LOG_DATE_FILE: "/tmp/pi-tab-hooks.lastdate",
