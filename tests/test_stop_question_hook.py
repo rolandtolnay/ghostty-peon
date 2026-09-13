@@ -50,6 +50,28 @@ class StopQuestionHookTests(unittest.TestCase):
             classify.assert_called_once()
             set_question.assert_called_once_with(session_id, module.EMOJI_QUESTION, "fix-tabs", "123", "stop-q")
 
+    def test_background_wait_classifies_real_questions_but_otherwise_keeps_working(self):
+        for asks_question in (True, False):
+            with self.subTest(asks_question=asks_question), hook_test_env() as (_root, env, dirs):
+                session_id = "session-background"
+                (dirs["debounce"] / session_id).write_text("456\n🌀 fix-tabs")
+                with patch.dict("os.environ", env, clear=False):
+                    module = load_hook_module()
+                    with patch.object(module, "llm_classifies_as_question", return_value=(asks_question, "stub")), patch.object(
+                        module, "set_status_emoji"
+                    ) as status, patch.object(module, "set_attention_emoji") as attention:
+                        run_main(module, {
+                            "session_id": session_id,
+                            "last_assistant_message": "Should we continue?",
+                            "background_wait": True,
+                        })
+                if asks_question:
+                    attention.assert_called_once_with(session_id, module.EMOJI_QUESTION, "fix-tabs", "456", "stop-q")
+                    status.assert_not_called()
+                else:
+                    status.assert_called_once_with(session_id, module.EMOJI_WORKING, "fix-tabs", "456", "stop-q")
+                    attention.assert_not_called()
+
     def test_llm_no_sets_ready_emoji_for_established_title(self):
         with hook_test_env() as (_root, env, dirs):
             session_id = "session-rhetorical"

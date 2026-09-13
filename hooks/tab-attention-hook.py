@@ -82,6 +82,15 @@ def main():
     timestamp, raw_title = read_debounce(session_id)
     clean_title = strip_emoji(raw_title)
 
+    # Passive wait notifications must never dismiss a real question or permission prompt.
+    if event in {"BackgroundWait", "BackgroundIdle"}:
+        emoji = EMOJI_WORKING if event == "BackgroundWait" else EMOJI_READY
+        if not clean_title or raw_title.startswith((f"{EMOJI_QUESTION} ", f"{EMOJI_BLOCKED} ", f"{emoji} ")):
+            log(session_id, "attention", f"skip: {event} has no title, needs attention, or already matches")
+            sys.exit(0)
+        set_status_emoji(session_id, emoji, clean_title, timestamp, "attention")
+        sys.exit(0)
+
     # Determine which action to take
     if event == "PreToolUse":
         tool = data.get("tool_name", "")

@@ -2,7 +2,8 @@
 """Detect when Claude stops and set the appropriate emoji.
 
 If Claude's last response contains a question requiring user input, sets
-EMOJI_QUESTION (with sound). Otherwise sets EMOJI_READY (silent).
+EMOJI_QUESTION (with sound). Otherwise sets EMOJI_READY (silent), or
+EMOJI_WORKING while Pi has a pending background wait.
 
 Tier 2 heuristic: reads the Stop event's `last_assistant_message` field.
 If a question mark is found in the last 500 chars, calls local Ollama
@@ -19,8 +20,10 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import title_state
 from sound_utils import (
+    EMOJI_BLOCKED,
     EMOJI_QUESTION,
     EMOJI_READY,
+    EMOJI_WORKING,
     log,
     set_attention_emoji,
     set_status_emoji,
@@ -74,13 +77,15 @@ def llm_classifies_as_question(text_tail: str, session_id: str = "") -> tuple[bo
         return False, f"llm error: {e}"
 
 
-def _set_ready(session_id: str, clean_title: str, timestamp: str) -> None:
-    """Set 🌿 ready emoji if a title is established."""
+def _set_idle_status(session_id: str, clean_title: str, timestamp: str, background_wait: bool) -> None:
+    """A stopped model loop can still have pending work outside the loop."""
+    emoji = EMOJI_WORKING if background_wait else EMOJI_READY
     if not clean_title:
-        log(session_id, "stop-q", f"skip {EMOJI_READY}: no established title")
+        log(session_id, "stop-q", f"skip {emoji}: no established title")
         return
-    log(session_id, "stop-q", f"-> {EMOJI_READY} ready ({clean_title!r})")
-    set_status_emoji(session_id, EMOJI_READY, clean_title, timestamp, "stop-q")
+    label = "background wait" if background_wait else "ready"
+    log(session_id, "stop-q", f"-> {emoji} {label} ({clean_title!r})")
+    set_status_emoji(session_id, emoji, clean_title, timestamp, "stop-q")
 
 
 def main():
@@ -107,17 +112,21 @@ def main():
 
     timestamp, raw_title = read_debounce(session_id)
     clean_title = strip_emoji(raw_title)
+    background_wait = data.get("background_wait") is True
+    if background_wait and raw_title.startswith((f"{EMOJI_QUESTION} ", f"{EMOJI_BLOCKED} ")):
+        log(session_id, "stop-q", "skip: user attention takes priority over background wait")
+        sys.exit(0)
 
     if not last_text:
-        log(session_id, "stop-q", "no last_assistant_message in stop data -> ready")
-        _set_ready(session_id, clean_title, timestamp)
+        log(session_id, "stop-q", "no last_assistant_message in stop data")
+        _set_idle_status(session_id, clean_title, timestamp, background_wait)
         sys.exit(0)
 
     # Pre-filter: only call LLM if '?' appears in the last 500 chars
     tail = last_text[-500:]
     if "?" not in tail:
-        log(session_id, "stop-q", "no '?' in last 500 chars -> ready")
-        _set_ready(session_id, clean_title, timestamp)
+        log(session_id, "stop-q", "no '?' in last 500 chars")
+        _set_idle_status(session_id, clean_title, timestamp, background_wait)
         sys.exit(0)
 
     # Skip if question emoji is already showing (no title change needed)
@@ -129,7 +138,7 @@ def main():
     result, reason = llm_classifies_as_question(tail, session_id)
     log(session_id, "stop-q", f"llm -> {result} ({reason})")
     if not result:
-        _set_ready(session_id, clean_title, timestamp)
+        _set_idle_status(session_id, clean_title, timestamp, background_wait)
         sys.exit(0)
 
     if not clean_title:

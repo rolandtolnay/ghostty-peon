@@ -324,7 +324,7 @@ Pi hook state now uses `<pid>-<conversation-id>` keys, and replacement handoffs 
 The stop hook is intentionally heuristic:
 
 - It checks only the last 500 chars of `last_assistant_message` for `?` before calling Ollama. A real question earlier than the last 500 chars can be missed.
-- If Pi `agent_end` has `msg_len=0`, the event mapping did not provide extractable assistant text; current hooks treat this as ready (`🌿`) because `agent_end` still means the turn finished. Later tool results recover `🌿` back to `🌀` if work unexpectedly continues.
+- If Pi `agent_end` has `msg_len=0`, the event mapping did not provide extractable assistant text. Hooks show ready (`🌿`) unless a wait owner reports pending work; `subagent_wait` and `schedule_wakeup` deliberately end the model loop while the task remains in progress (`🌀`). Later tool results also recover stale `🌿` back to `🌀`.
 - If there is no established debounce title, `stop-q` logs `skip 🌿: no established title` rather than creating a title from nothing.
 - Pi structured `question`/`AskUserQuestion` tool-call blocks must be projected to user-facing text in `pi-extension/event-mapping.ts`; otherwise `tab-stop-question-hook.py` can miss questions represented outside plain text.
 
@@ -581,7 +581,8 @@ Pi does not use Claude Code's `settings.json` hook system. The Pi extension maps
 | `before_agent_start` | `tabtitle-hook.py` | uses Claude-like `UserPromptSubmit` payload |
 | `tool_call` `question` | `tab-attention-hook.py` | uses Claude-like `PreToolUse` payload |
 | `tool_result` | `tab-attention-hook.py` | uses Claude-like `PostToolUse` payload |
-| `agent_end` | `tab-stop-question-hook.py` | uses Claude-like `Stop` payload |
+| `agent_end` | `tab-stop-question-hook.py` | uses Claude-like `Stop` payload; pending background waits keep 🌀 instead of 🌿 |
+| `ghostty-peon:wait` | `tab-attention-hook.py` | passive wait/wake/cancel status; preserves ⭐/🔥 |
 | `session_before_fork` | runner log only | records fork intent before replacement |
 | `session_before_compact` | runner log only | records compaction intent and token count when available |
 | `session_compact` | `session-sound-hook.py` | preserves the session terminal id and restores existing title after compaction; captures only if missing |
@@ -654,6 +655,14 @@ try {
 ```
 
 Without this optional integration, Pi still supports session sounds, tab titles, 🌀 working, ⭐ questions, and 🌿 ready.
+
+### Pi Background Wait Integration
+
+The owning extensions publish `ghostty-peon:wait` snapshots with `{ source, sessionId, cwd, state }`. `source` is `subagent_wait` or `schedule_wakeup`; `sessionId` is the raw Pi conversation ID. `state` is `waiting` while a wait is pending, `resuming` when it wakes the model, or `idle` when no wait remains (including timer cancellation). Immediate results and failed scheduling calls do not create a wait. Unmonitored background subagents do not count.
+
+Ghostty Peon combines the two sources: either pending wait keeps 🌀, but ⭐/🔥 retain priority. Wait notifications are silent and do not change the task slug. Status writes are serialized with the stop hook so a late stop result cannot leave a newly waiting session ready. A completed resumed turn returns to the normal question/ready path.
+
+On session start/reload and tree navigation, Ghostty Peon emits `ghostty-peon:wait-query` with `{ sessionId }`; owners reply with their current snapshots. This avoids replaying another extension's private journal and handles either extension load order. The wait owners must include this integration; older versions retain the ordinary ready behavior. Reload Pi after updating both Ghostty Peon and the owning extensions.
 
 ### Verifying Pi Install
 
