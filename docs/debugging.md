@@ -201,7 +201,7 @@ Look for `tabtitle` lines. The log will show exactly why:
 - `llm returned None` — Ollama timed out, returned an invalid slug, or returned `KEEP` for an established title; a titleless prompt never offers `KEEP`
 - `llm error: ...` — Ollama not running or model not available
 - `set_tab_title failed` — Ghostty AppleScript failed (stale/missing terminal, Ghostty not running, or AppleScript error)
-- `target: SKIPPED (no term_id, refusing unsafe fallback)` — terminal UUID was lost
+- `target: SKIPPED (no term_id, refusing unsafe fallback)` — terminal UUID was lost or never captured; check startup for `no safe terminal match` or an ownership rejection
 
 **Attention emoji not appearing:**
 Look for `attention` lines and `stop-q` lines:
@@ -371,7 +371,7 @@ ls -lt /tmp/claude-tabtitle/   # most recent file = current session
 
 ### Tab Targeting
 
-Each session's Ghostty terminal UUID is captured at `SessionStart` and persisted to `/tmp/claude-tabterminal/{session_id}`. All hooks use this UUID to target the correct tab via `perform action "set_tab_title:..." on (first terminal whose id is "UUID")`, which works regardless of which tab or window is focused.
+Each session's Ghostty terminal UUID is captured at `SessionStart` and persisted to `/tmp/claude-tabterminal/{session_id}`. Capture checks the session's working directory against Ghostty: a matching focused terminal is preferred; otherwise only a unique directory match is accepted. If focus is elsewhere and the directory match is missing or ambiguous, capture logs `no safe terminal match` rather than targeting an unrelated tab. Working-directory matching depends on Ghostty's shell integration; same-directory tabs still rely on startup focus, while replacement handoffs and existing compaction targets bypass capture. All hooks use this UUID to target the correct tab via `perform action "set_tab_title:..." on (first terminal whose id is "UUID")`, which works regardless of which tab or window is focused.
 
 If no UUID is available for a session, `set_tab_title()` refuses to operate (logs `SKIPPED: no term_id, refusing unsafe fallback`) to prevent accidentally renaming the wrong tab.
 

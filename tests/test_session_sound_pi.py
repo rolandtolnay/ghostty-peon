@@ -4,6 +4,34 @@ from helpers import assert_hook_ok, hook_test_env, read_log, run_hook
 
 
 class PiSessionSoundHookTests(unittest.TestCase):
+    def test_startup_with_other_project_focused_can_update_its_own_title(self):
+        with hook_test_env(fake_term_id="term-claude") as (root, env, dirs):
+            peer = root / "claude-terminal"
+            peer.mkdir()
+            (peer / "claude-session").write_text("term-claude")
+            env["GHOSTTY_PEON_PEER_TERMINAL_ID_DIRS"] = str(peer)
+            env["GHOSTTY_PEON_FAKE_CWD_TERM_ID"] = "term-project"
+            result = run_hook(
+                "session-sound-hook.py",
+                {"session_id": "pi-session", "cwd": str(root / "project"), "source": "startup"},
+                env,
+            )
+            assert_hook_ok(self, result)
+            target = dirs["terminal"] / "pi-session"
+            self.assertTrue(target.exists(), "Wrong focused-tab capture left the session without a target")
+            self.assertEqual(target.read_text(), "term-project")
+            self.assertEqual((peer / "claude-session").read_text(), "term-claude")
+
+            (dirs["debounce"] / "pi-session").write_text("0\n🌿 investigate-discovery-gap")
+            result = run_hook(
+                "tab-attention-hook.py",
+                {"session_id": "pi-session", "hook_event_name": "PostToolUse", "tool_name": "read"},
+                env,
+            )
+            assert_hook_ok(self, result)
+            self.assertIn("🌀 investigate-discovery-gap", (dirs["debounce"] / "pi-session").read_text())
+            self.assertIn("target: term_id='term-project'", read_log(root))
+
     def test_startup_does_not_steal_existing_terminal_owner(self):
         with hook_test_env(fake_term_id="term-owned") as (root, env, dirs):
             (dirs["terminal"] / "old-session").write_text("term-owned")

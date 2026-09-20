@@ -116,18 +116,33 @@ def save_terminal_id(session_id: str, term_id: str) -> None:
         f.write(term_id)
 
 
-def capture_terminal_id(session_id: str) -> str | None:
-    """Capture and persist the Ghostty terminal UUID for the focused tab."""
+def capture_terminal_id(session_id: str, cwd: str = "") -> str | None:
+    """Capture the focused terminal only when its directory matches the session.
+
+    Startup may run after the user switches tabs. If focus is elsewhere, use
+    the sole terminal matching cwd; never guess among multiple alternatives.
+    Callers without cwd retain the legacy focused-terminal behavior.
+    """
+    script = (
+        'tell application "Ghostty"\n'
+        "    set t to focused terminal of selected tab of front window\n"
+        "    return id of t\n"
+        "end tell"
+    )
+    if cwd:
+        script = (
+            'tell application "Ghostty"\n'
+            "    set focusedId to id of focused terminal of selected tab of front window\n"
+            "    set rows to focusedId\n"
+            "    repeat with t in terminals\n"
+            '        set rows to rows & linefeed & (id of t) & (ASCII character 9) & (working directory of t)\n'
+            "    end repeat\n"
+            "    return rows\n"
+            "end tell"
+        )
     try:
         result = subprocess.run(
-            [
-                "osascript",
-                "-e",
-                'tell application "Ghostty"\n'
-                "    set t to focused terminal of selected tab of front window\n"
-                "    return id of t\n"
-                "end tell",
-            ],
+            ["osascript", "-e", script],
             capture_output=True,
             text=True,
             timeout=5,
@@ -135,6 +150,15 @@ def capture_terminal_id(session_id: str) -> str | None:
         if result.returncode != 0:
             return None
         term_id = result.stdout.strip()
+        if cwd:
+            rows = result.stdout.splitlines()
+            focused_id = rows[0].strip() if rows else ""
+            matches = []
+            for row in rows[1:]:
+                candidate, separator, directory = row.partition("\t")
+                if separator and candidate and directory and os.path.realpath(directory) == os.path.realpath(cwd):
+                    matches.append(candidate)
+            term_id = focused_id if focused_id in matches else (matches[0] if len(matches) == 1 else "")
         if not term_id:
             return None
         save_terminal_id(session_id, term_id)

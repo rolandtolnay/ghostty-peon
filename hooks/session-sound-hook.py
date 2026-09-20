@@ -137,7 +137,7 @@ def reset_to_folder(label: str) -> bool:
 
 
 def capture_and_claim(label: str, replace_existing_owner: bool = False) -> str | None:
-    term_id = capture_terminal_id(session_id)
+    term_id = capture_terminal_id(session_id, cwd)
     log(
         session_id,
         "session",
@@ -145,6 +145,7 @@ def capture_and_claim(label: str, replace_existing_owner: bool = False) -> str |
         f"(reason={pi_reason!r}, file={_short_path(session_file)!r}, prev={_short_path(previous_session_file)!r})",
     )
     if not term_id:
+        log(session_id, "session", f"{label} -> no safe terminal match for cwd={cwd!r}")
         return None
 
     owner = is_terminal_owned(term_id, session_id)

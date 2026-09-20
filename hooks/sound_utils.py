@@ -405,9 +405,9 @@ def _get_session_unit(session_id: str) -> tuple[str, str] | None:
     return None
 
 
-def capture_terminal_id(session_id: str) -> str | None:
-    """Capture the Ghostty terminal UUID for the currently focused tab."""
-    return ghostty_tab.capture_terminal_id(session_id)
+def capture_terminal_id(session_id: str, cwd: str = "") -> str | None:
+    """Capture a Ghostty terminal matching the session's working directory."""
+    return ghostty_tab.capture_terminal_id(session_id, cwd)
 
 
 def is_terminal_owned(term_id: str, exclude_session: str) -> str | None:

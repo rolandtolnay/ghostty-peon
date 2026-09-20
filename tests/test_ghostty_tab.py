@@ -11,6 +11,28 @@ import ghostty_tab
 
 
 class GhosttyTabTests(unittest.TestCase):
+    def test_capture_matches_directory_instead_of_unrelated_focus(self):
+        with hook_test_env() as (root, env, dirs):
+            project = str(root / "project")
+            cases = [
+                (f"other\nother\t/elsewhere\nours\t{project}\n", "ours"),
+                (f"ours\nours\t{project}\npeer\t{project}\n", "ours"),
+                (f"other\nfirst\t{project}\nsecond\t{project}\n", None),
+                ("other\nother\t/elsewhere\n", None),
+            ]
+            for index, (inventory, expected) in enumerate(cases):
+                with self.subTest(inventory=inventory), patch.dict(os.environ, env, clear=True), patch(
+                    "ghostty_tab.subprocess.run",
+                    return_value=SimpleNamespace(returncode=0, stdout=inventory),
+                ):
+                    session = f"session-{index}"
+                    self.assertEqual(ghostty_tab.capture_terminal_id(session, project), expected)
+                    target = dirs["terminal"] / session
+                    if expected:
+                        self.assertEqual(target.read_text(), expected)
+                    else:
+                        self.assertFalse(target.exists())
+
     def test_terminal_ownership_is_terminal_scoped(self):
         with hook_test_env() as (_root, env, dirs):
             with patch.dict(os.environ, env, clear=True):

@@ -22,6 +22,8 @@ def hook_test_env(namespace="pi", fake_term_id="term-test-1"):
         osascript.write_text(
             "#!/bin/sh\n"
             "case \"$*\" in\n"
+            "  *'working directory of t'*) printf '%s\\n' \"$GHOSTTY_PEON_FAKE_TERM_ID\"; "
+            "printf '%s\\t%s\\n' \"${GHOSTTY_PEON_FAKE_CWD_TERM_ID-$GHOSTTY_PEON_FAKE_TERM_ID}\" \"$GHOSTTY_PEON_FAKE_CWD\"; exit 0 ;;\n"
             "  *'return id of t'*) printf '%s\\n' \"${GHOSTTY_PEON_FAKE_TERM_ID:-term-test-1}\" ; exit 0 ;;\n"
             "esac\n"
             "exit 0\n"
@@ -74,7 +76,7 @@ def run_hook(script_name, payload, env, timeout=10):
         text=True,
         capture_output=True,
         cwd=REPO_ROOT,
-        env=env,
+        env={"GHOSTTY_PEON_FAKE_CWD": payload.get("cwd", ""), **env},
         timeout=timeout,
     )
 
